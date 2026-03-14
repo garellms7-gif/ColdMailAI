@@ -88,14 +88,10 @@ function parseEmailJson(raw) {
 
 async function generateEmails(nameAndOffer, targetAndRole, goal) {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY
-  const res = await fetch('/api/anthropic/v1/messages', {
+  const res = await fetch('/api/anthropic', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
       model: 'claude-opus-4-5',

@@ -1,5 +1,17 @@
 {
     "rewrites": [
+      { "source": "/api/(.*)", "destination": "/api/$1" },
       { "source": "/(.*)", "destination": "/" }
     ]
   }
+  ```
+  
+  Then push it:
+  ```
+  git add .
+  ```
+  ```
+  git commit -m "fix vercel routing"
+  ```
+  ```
+  git push
