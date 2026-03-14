@@ -35,18 +35,48 @@ const EMAIL_CARD_KEYS = [
 ]
 
 const PLACEHOLDER_EMAILS = [
-  { title: 'Short Email', body: 'Hi [Name], I\'m [Your Name] and I help companies like [Company] achieve [benefit]. Would you be open to a quick 15-minute call this week to explore if we\'re a fit? Best, [Your Name]' },
-  { title: 'Personalized Email', body: 'Hi [Name], I noticed [Company] has been [recent achievement/trend]. As someone who specializes in [your offer], I\'ve helped similar companies [specific outcome]. I\'d love to share one idea that could [relevant benefit]. Are you available for a brief call on [timeframe]? Regards, [Your Name]' },
-  { title: 'Follow-Up Email', body: 'Hi [Name], I wanted to follow up on my previous message about [topic]. I understand you\'re busy—if now isn\'t the right time, no problem. I\'ll check back in [timeframe]. In the meantime, here\'s a [resource] that might be useful. Best, [Your Name]' },
+  { title: 'Short Email', subject: '', body: 'Hi [Name], I\'m [Your Name] and I help companies like [Company] achieve [benefit]. Would you be open to a quick 15-minute call this week to explore if we\'re a fit? Best, [Your Name]' },
+  { title: 'Personalized Email', subject: '', body: 'Hi [Name], I noticed [Company] has been [recent achievement/trend]. As someone who specializes in [your offer], I\'ve helped similar companies [specific outcome]. I\'d love to share one idea that could [relevant benefit]. Are you available for a brief call on [timeframe]? Regards, [Your Name]' },
+  { title: 'Follow-Up Email', subject: '', body: 'Hi [Name], I wanted to follow up on my previous message about [topic]. I understand you\'re busy—if now isn\'t the right time, no problem. I\'ll check back in [timeframe]. In the meantime, here\'s a [resource] that might be useful. Best, [Your Name]' },
 ]
 
-const SYSTEM_PROMPT = `You are an expert cold email copywriter. Write cold emails that are direct, personal, and have high reply rates. Never use generic openers like I hope this finds you well. Always lead with value or a specific pain point.`
+const SYSTEM_PROMPT = `You are an expert cold email copywriter. Write cold emails that are direct, personal, and have high reply rates. Never use generic openers like I hope this finds you well. Always lead with value or a specific pain point.
 
-function buildUserMessage(input1, input2, input3) {
+CRITICAL — Sender name vs product: The sender is a real person with a separate product or service. The sender's personal first name must appear in the sign-off and may appear in the body; the product/business name must NEVER replace the person's name anywhere. Never sign off with the product name or "Team" — only the sender's first name (e.g. "Best," then "Garell" on the next line). In the body, reference the person by their first name where natural and describe the product/service separately.
+
+Email 1 (short): Use a specific, conversational CTA such as "Open to a quick 12-minute call this week?" — not "Worth a 15-minute call?" or similar.
+
+Email 2 (personalized): For social proof, use a specific, believable line like "I've helped a handful of founders in the SaaS space cut their outreach time in half using this same approach" — never vague phrases like "A few networks similar to yours are using [product name]."
+
+Email 3 (follow-up): Do NOT use "wanted to bump this up," "wanted to float this up," or any automated-sequence opener. Use a human opener such as "Still thinking about whether this makes sense for you —" so it feels like a real person following up, not a sequence.`
+
+/** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
+function parseNameAndOffer(input) {
+  const trimmed = (input || '').trim()
+  const commaIndex = trimmed.indexOf(',')
+  if (commaIndex === -1) {
+    return { senderName: trimmed || 'Sender', senderOffer: trimmed || 'their product/service' }
+  }
+  return {
+    senderName: trimmed.slice(0, commaIndex).trim() || 'Sender',
+    senderOffer: trimmed.slice(commaIndex + 1).trim() || 'their product/service',
+  }
+}
+
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal) {
   return `Generate 3 cold emails for the following situation:
-Sender: ${input1}. Target: ${input2}. Goal: ${input3}.
-Return ONLY a JSON object with keys: short_email, personalized_email, follow_up_email.
-Each value is the full email body as a string. No markdown, no extra text.`
+
+SENDER'S PERSONAL NAME (use for opening, in-body reference, and sign-off — sign off with first name only): ${senderName}
+SENDER'S PRODUCT OR SERVICE (describe/reference this separately in the body, not as a business name): ${senderOffer}
+
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+
+Return ONLY a JSON object with these keys (all string values, no markdown):
+- short_email_subject, short_email (body)
+- personalized_email_subject, personalized_email (body)
+- follow_up_email_subject, follow_up_email (body)
+Every email must sign off with only the sender's first name (e.g. "Best," then "${senderName.split(/\s+/)[0] || senderName}" on the next line).`
 }
 
 function parseEmailJson(raw) {
@@ -57,24 +87,22 @@ function parseEmailJson(raw) {
 }
 
 async function generateEmails(nameAndOffer, targetAndRole, goal) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY
-  if (!apiKey || apiKey === 'your-api-key-here') {
-    throw new Error('Missing API key. Add VITE_ANTHROPIC_API_KEY to your .env file.')
-  }
-
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('/api/anthropic/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
       model: 'claude-opus-4-5',
       max_tokens: 1500,
       system: SYSTEM_PROMPT,
       messages: [
-        { role: 'user', content: buildUserMessage(nameAndOffer, targetAndRole, goal) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal) },
       ],
     }),
   })
@@ -101,6 +129,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal) {
 
   return EMAIL_CARD_KEYS.map(({ key, title }) => ({
     title,
+    subject: typeof parsed[`${key}_subject`] === 'string' ? parsed[`${key}_subject`] : '',
     body: typeof parsed[key] === 'string' ? parsed[key] : '',
   }))
 }
@@ -153,7 +182,10 @@ function App() {
     }
   }
 
-  const handleCopy = useCallback((text, index) => {
+  const handleCopy = useCallback((email, index) => {
+    const text = email.subject
+      ? `Subject: ${email.subject}\n\n${email.body}`
+      : email.body
     navigator.clipboard.writeText(text)
     setCopiedIndex(index)
     window.setTimeout(() => setCopiedIndex(null), 2000)
@@ -337,12 +369,17 @@ function App() {
                 <h3 className="text-base font-semibold text-blue-400 mb-3">
                   {email.title}
                 </h3>
+                {email.subject ? (
+                  <div className="mb-3 px-3 py-2 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-200 text-sm font-medium">
+                    Subject: {email.subject}
+                  </div>
+                ) : null}
                 <p className="text-slate-300 text-sm leading-relaxed flex-1 mb-5 whitespace-pre-wrap">
                   {email.body}
                 </p>
                 <button
                   type="button"
-                  onClick={() => handleCopy(email.body, index)}
+                  onClick={() => handleCopy(email, index)}
                   className="w-full py-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 active:scale-[0.98]"
                 >
                   {copiedIndex === index ? 'Copied!' : 'Copy'}
