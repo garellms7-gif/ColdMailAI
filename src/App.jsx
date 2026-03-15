@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react'
 
 const FREE_GENERATIONS_LIMIT = 3
 const USAGE_STORAGE_KEY = 'coldmailai_usage_count'
+const UNLOCK_STORAGE_KEY = 'coldmailai_unlocked'
+const VALID_UNLOCK_CODE = 'COLDMAIL2024'
 const GUMROAD_LINK = 'https://YOUR_GUMROAD_LINK' // Replace with your Gumroad product URL
 
 function getStoredUsage() {
@@ -18,6 +20,22 @@ function setStoredUsage(count) {
     localStorage.setItem(USAGE_STORAGE_KEY, String(count))
   } catch {
     // ignore storage errors (e.g. private mode)
+  }
+}
+
+function getStoredUnlocked() {
+  try {
+    return localStorage.getItem(UNLOCK_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function setStoredUnlocked(value) {
+  try {
+    localStorage.setItem(UNLOCK_STORAGE_KEY, value ? 'true' : 'false')
+  } catch {
+    // ignore
   }
 }
 
@@ -151,13 +169,17 @@ function App() {
   const [copiedIndex, setCopiedIndex] = useState(null)
   const [usageCount, setUsageCount] = useState(getStoredUsage)
   const [showUpgradeModal, setShowUpgradeModal] = useState(false)
+  const [unlocked, setUnlocked] = useState(getStoredUnlocked)
+  const [showUnlockInput, setShowUnlockInput] = useState(false)
+  const [unlockCodeInput, setUnlockCodeInput] = useState('')
+  const [unlockCodeError, setUnlockCodeError] = useState('')
 
   const usageRemaining = Math.max(0, FREE_GENERATIONS_LIMIT - usageCount)
   const allFilled = nameAndOffer.trim() !== '' && targetAndRole.trim() !== '' && goal.trim() !== ''
-  const canGenerate = allFilled && !loading && usageRemaining > 0
+  const canGenerate = allFilled && !loading && (unlocked || usageRemaining > 0)
 
   const handleGenerate = async () => {
-    if (usageRemaining <= 0) {
+    if (!unlocked && usageRemaining <= 0) {
       setShowUpgradeModal(true)
       return
     }
@@ -167,11 +189,13 @@ function App() {
     try {
       const result = await generateEmails(nameAndOffer, targetAndRole, goal)
       setEmails(result)
-      const newCount = usageCount + 1
-      setUsageCount(newCount)
-      setStoredUsage(newCount)
-      if (newCount >= FREE_GENERATIONS_LIMIT) {
-        setShowUpgradeModal(true)
+      if (!unlocked) {
+        const newCount = usageCount + 1
+        setUsageCount(newCount)
+        setStoredUsage(newCount)
+        if (newCount >= FREE_GENERATIONS_LIMIT) {
+          setShowUpgradeModal(true)
+        }
       }
     } catch (err) {
       setError(err.message || 'Something went wrong.')
@@ -204,7 +228,12 @@ function App() {
       {showUpgradeModal && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60"
-          onClick={() => setShowUpgradeModal(false)}
+          onClick={() => {
+            setShowUpgradeModal(false)
+            setShowUnlockInput(false)
+            setUnlockCodeInput('')
+            setUnlockCodeError('')
+          }}
           role="dialog"
           aria-modal="true"
           aria-labelledby="upgrade-modal-title"
@@ -229,11 +258,70 @@ function App() {
             </a>
             <button
               type="button"
-              onClick={() => setShowUpgradeModal(false)}
+              onClick={() => {
+                setShowUpgradeModal(false)
+                setShowUnlockInput(false)
+                setUnlockCodeInput('')
+                setUnlockCodeError('')
+              }}
               className="mt-4 text-slate-500 hover:text-slate-700 text-sm"
             >
               Maybe later
             </button>
+            <div className="mt-4">
+              {!showUnlockInput ? (
+                <button
+                  type="button"
+                  onClick={() => { setShowUnlockInput(true); setUnlockCodeError('') }}
+                  className="text-slate-500 hover:text-slate-700 text-sm underline"
+                >
+                  Have a code?
+                </button>
+              ) : (
+                <div className="mt-2 text-left">
+                  <input
+                    type="text"
+                    value={unlockCodeInput}
+                    onChange={(e) => { setUnlockCodeInput(e.target.value); setUnlockCodeError('') }}
+                    placeholder="Enter code"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-900 text-sm"
+                    autoFocus
+                  />
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (unlockCodeInput.trim() === VALID_UNLOCK_CODE) {
+                          setStoredUnlocked(true)
+                          setUnlocked(true)
+                          setShowUpgradeModal(false)
+                          setShowUnlockInput(false)
+                          setUnlockCodeInput('')
+                          setUnlockCodeError('')
+                        } else {
+                          setUnlockCodeError('Invalid code')
+                        }
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700 text-white text-sm font-medium hover:bg-slate-600"
+                    >
+                      Unlock
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowUnlockInput(false); setUnlockCodeInput(''); setUnlockCodeError('') }}
+                      className="text-slate-500 hover:text-slate-700 text-sm"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {unlockCodeError && (
+                    <p className="mt-1 text-red-600 text-sm" role="alert">
+                      {unlockCodeError}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -247,20 +335,22 @@ function App() {
               ColdMailAI
             </h1>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <p className="text-slate-400 text-sm tabular-nums">
-              {usageRemaining}/3 free uses remaining
-            </p>
-            {usageRemaining === 0 && (
-              <button
-                type="button"
-                onClick={() => setShowUpgradeModal(true)}
-                className="text-blue-400 hover:text-blue-300 text-sm font-medium"
-              >
-                Upgrade
-              </button>
-            )}
-          </div>
+          {!unlocked && (
+            <div className="flex items-center gap-2 shrink-0">
+              <p className="text-slate-400 text-sm tabular-nums">
+                {usageRemaining}/3 free uses remaining
+              </p>
+              {usageRemaining === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowUpgradeModal(true)}
+                  className="text-blue-400 hover:text-blue-300 text-sm font-medium"
+                >
+                  Upgrade
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
