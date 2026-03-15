@@ -4,7 +4,7 @@ const FREE_GENERATIONS_LIMIT = 3
 const USAGE_STORAGE_KEY = 'coldmailai_usage_count'
 const UNLOCK_STORAGE_KEY = 'coldmailai_unlocked'
 const VALID_UNLOCK_CODE = 'COLDMAIL2024'
-const GUMROAD_LINK = 'https://YOUR_GUMROAD_LINK' // Replace with your Gumroad product URL
+const GUMROAD_LINK = 'https://garell.gumroad.com/l/cfjno' // Replace with your Gumroad product URL
 
 function getStoredUsage() {
   try {
