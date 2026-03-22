@@ -6,7 +6,7 @@ AI-powered cold email generator. Create personalized, high-converting cold email
 
 - **3 email variants** — Short, personalized, and follow-up templates
 - **Goal-based** — Book a call, get a reply, pitch a deal, or request a demo
-- **Usage limit** — 3 free generations; upgrade to Pro for unlimited emails
+- **Usage limit** — 6 free generations; upgrade to Pro for unlimited emails
 
 ## Setup
 
