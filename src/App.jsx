@@ -849,6 +849,83 @@ function renderPersonalizedText(text, firstName) {
   ))
 }
 
+// ─── Reply Score ────────────────────────────────────────────────────────────
+
+const SPAM_TRIGGER_WORDS = ['free', 'guaranteed', 'no risk', 'limited time', 'act now']
+
+/** Rough syllable count for a single word. */
+function countSyllables(word) {
+  const w = word.toLowerCase().replace(/[^a-z]/g, '')
+  if (w.length <= 3) return 1
+  // strip trailing silent-e patterns and count vowel groups
+  const stripped = w.replace(/(?:[^laeiouy]es|ed|[^laeiouy]e)$/, '').replace(/^y/, '')
+  const matches = stripped.match(/[aeiouy]{1,2}/g)
+  return matches ? Math.max(1, matches.length) : 1
+}
+
+/** Flesch-Kincaid Grade Level (simplified). */
+function fleschKincaidGrade(text) {
+  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 2)
+  const words = text.trim().split(/\s+/).filter((w) => w.length > 0)
+  if (sentences.length === 0 || words.length === 0) return 0
+  const syllables = words.reduce((n, w) => n + countSyllables(w), 0)
+  return 0.39 * (words.length / sentences.length) + 11.8 * (syllables / words.length) - 15.59
+}
+
+/**
+ * Computes the reply-likelihood score (0–100) and per-factor breakdown.
+ * @param {string} body  Email body text
+ * @param {string} ps    P.S. line (empty string if none)
+ */
+function computeReplyScore(body, ps) {
+  const wc = countWords(body)
+  const bodyLower = body.toLowerCase()
+
+  // 1. Word count in optimal range (50–125 words): +20
+  const wcPass = wc >= 50 && wc <= 125
+
+  // 2. Prospect first name in greeting: +15
+  //    Matches "Hi Sarah," / "Hey John!" / "Dear Alex,"
+  const namePass = /\b(?:hi|hey|dear)\s+[A-Z][a-z]{1,}[,!]/.test(body)
+
+  // 3. Ends with a question as CTA: +15
+  //    Check the last ~200 chars for a question mark before the sign-off
+  const tail = body.slice(-200)
+  const questionPass = /\?/.test(tail)
+
+  // 4. No spam trigger words: +20
+  const foundSpam = SPAM_TRIGGER_WORDS.filter((w) => bodyLower.includes(w))
+  const spamPass = foundSpam.length === 0
+
+  // 5. Reading level ≤ grade 6: +15
+  const grade = fleschKincaidGrade(body)
+  const readPass = grade <= 6.0
+
+  // 6. P.S. line present: +15
+  const psPass = ps.trim().length > 0
+
+  const factors = [
+    { label: 'Word count (50–125 words)',     points: 20, pass: wcPass,      earned: wcPass ? 20 : 0,      detail: `${wc} words` },
+    { label: 'First name in greeting',         points: 15, pass: namePass,    earned: namePass ? 15 : 0,    detail: namePass ? 'Name detected' : 'No "Hi [Name]" found' },
+    { label: 'Ends with a question CTA',       points: 15, pass: questionPass,earned: questionPass ? 15 : 0,detail: questionPass ? 'Question found' : 'No question mark near end' },
+    { label: 'No spam trigger words',          points: 20, pass: spamPass,    earned: spamPass ? 20 : 0,    detail: spamPass ? 'Clean' : `Found: ${foundSpam.join(', ')}` },
+    { label: `Reading level (grade ≤ 6)`,      points: 15, pass: readPass,    earned: readPass ? 15 : 0,    detail: `Grade ${Math.max(0, grade).toFixed(1)}` },
+    { label: 'P.S. line attached',             points: 15, pass: psPass,      earned: psPass ? 15 : 0,      detail: psPass ? 'P.S. present' : 'No P.S. line' },
+  ]
+
+  const score = factors.reduce((sum, f) => sum + f.earned, 0)
+  return { score, factors }
+}
+
+/** Tailwind classes for the score badge based on value. */
+function scoreBadgeClasses(score) {
+  if (score >= 75) return 'border-green-500/50 bg-green-600/15 text-green-300'
+  if (score >= 50) return 'border-amber-500/50 bg-amber-500/15 text-amber-300'
+  return 'border-red-500/50 bg-red-600/15 text-red-300'
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 function StarBookmarkIcon({ filled }) {
   return (
     <svg
@@ -958,6 +1035,16 @@ function App() {
     arr.sort((a, b) => (savedSortNewestFirst ? b.savedAt - a.savedAt : a.savedAt - b.savedAt))
     return arr
   }, [savedEmails, savedSortNewestFirst])
+
+  const emailScores = useMemo(() => {
+    if (!showGeneratedResults) return [null, null, null]
+    return [0, 1, 2].map((i) => {
+      const body = emailCardBodies[i] ?? ''
+      if (!body.trim()) return null
+      const ps = PS_EMAIL_INDICES.includes(i) ? (psLines[i] ?? '') : ''
+      return computeReplyScore(body, ps)
+    })
+  }, [emailCardBodies, psLines, showGeneratedResults])
 
   const usageRemaining = Math.max(0, FREE_GENERATIONS_LIMIT - usageCount)
   const atFreeLimit = !unlocked && usageCount >= FREE_GENERATIONS_LIMIT
@@ -2215,6 +2302,51 @@ function App() {
                     ) : psLines[index] ? (
                       <p className="text-xs text-sky-300/80 leading-relaxed">{psLines[index]}</p>
                     ) : null}
+                  </div>
+                )}
+                {/* Reply Score badge */}
+                {showGeneratedResults && emailScores[index] && (
+                  <div className="relative group/score mb-3">
+                    <div className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 cursor-default select-none ${scoreBadgeClasses(emailScores[index].score)}`}>
+                      <span className="text-xs font-semibold tracking-wide">Reply Score</span>
+                      <span className="text-sm font-bold tabular-nums">
+                        {emailScores[index].score}
+                        <span className="text-[10px] font-normal opacity-60">/100</span>
+                      </span>
+                    </div>
+                    {/* Breakdown tooltip */}
+                    <div
+                      className="absolute bottom-full left-0 right-0 mb-1.5 rounded-xl border border-slate-600/80 bg-slate-900/98 p-3.5 shadow-xl shadow-black/40 opacity-0 group-hover/score:opacity-100 transition-opacity duration-150 pointer-events-none z-30"
+                      role="tooltip"
+                    >
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2.5">Score Breakdown</p>
+                      <div className="space-y-2">
+                        {emailScores[index].factors.map((f) => (
+                          <div key={f.label} className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className={`shrink-0 text-xs leading-none ${f.pass ? 'text-green-400' : 'text-red-400'}`} aria-hidden="true">
+                                {f.pass ? '✓' : '✗'}
+                              </span>
+                              <span className="text-[11px] text-slate-300 leading-snug">{f.label}</span>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <span className={`text-[11px] font-bold tabular-nums leading-none ${f.pass ? 'text-green-400' : 'text-slate-600'}`}>
+                                +{f.earned}
+                              </span>
+                              {f.detail && (
+                                <span className="block text-[10px] text-slate-500 mt-0.5 leading-snug">{f.detail}</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2.5 pt-2 border-t border-slate-700/60 flex justify-between items-center">
+                        <span className="text-[10px] text-slate-500">Total</span>
+                        <span className={`text-xs font-bold tabular-nums ${scoreBadgeClasses(emailScores[index].score).split(' ').find(c => c.startsWith('text-'))}`}>
+                          {emailScores[index].score} / 100
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
                 <button
