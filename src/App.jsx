@@ -239,6 +239,13 @@ function countWords(text) {
   return t.split(/\s+/).length
 }
 
+function wordCountBadgeClass(count) {
+  if (count >= 50 && count <= 125) return 'bg-green-500/15 text-green-400 border-green-500/30'
+  if (count >= 126 && count <= 175) return 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30'
+  if (count >= 176) return 'bg-red-500/15 text-red-400 border-red-500/30'
+  return 'bg-slate-600/30 text-slate-400 border-slate-600/40'
+}
+
 function emailLocalPartFromName(name) {
   const s = (name || 'you').toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '')
   return s || 'you'
@@ -1467,6 +1474,16 @@ function App() {
                   <h3 className="text-base font-semibold text-blue-400 min-w-0 flex-1">
                     {email.title}
                   </h3>
+                  <div className="relative group/wc shrink-0">
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums cursor-default ${wordCountBadgeClass(countWords(emailCardBodies[index] ?? ''))}`}>
+                      {countWords(emailCardBodies[index] ?? '')}w
+                    </span>
+                    <div className="pointer-events-none absolute bottom-full right-0 mb-2 hidden group-hover/wc:block z-10">
+                      <div className="rounded-lg bg-slate-900 border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200 shadow-xl whitespace-nowrap">
+                        Best reply rates occur between 50–125 words.
+                      </div>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={() => handleBookmarkCard(index)}
