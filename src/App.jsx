@@ -681,6 +681,10 @@ function App() {
   const [emailCardOriginalBodies, setEmailCardOriginalBodies] = useState(() =>
     PLACEHOLDER_EMAILS.map((e) => e.body),
   )
+  const [emailCardSubjects, setEmailCardSubjects] = useState(() => PLACEHOLDER_EMAILS.map((e) => e.subject ?? ''))
+  const [emailCardOriginalSubjects, setEmailCardOriginalSubjects] = useState(() =>
+    PLACEHOLDER_EMAILS.map((e) => e.subject ?? ''),
+  )
   const [savedEmails, setSavedEmails] = useState(readSavedEmailsFromStorage)
   const [savedDrawerOpen, setSavedDrawerOpen] = useState(false)
   const [savedSortNewestFirst, setSavedSortNewestFirst] = useState(true)
@@ -727,7 +731,7 @@ function App() {
     const localPart = emailLocalPartFromName(senderName)
     const fromLine = `${senderDisplay} <${localPart}@email.com>`
     const toLine = targetAndRole.trim() || 'Recipient'
-    const subjectLine = email.subject?.trim() || 'No subject yet'
+    const subjectLine = (emailCardSubjects[inboxPreviewIndex] ?? email.subject ?? '').trim() || 'No subject yet'
     const body = emailCardBodies[inboxPreviewIndex] ?? email.body ?? ''
     return {
       fromLine,
@@ -738,7 +742,7 @@ function App() {
       senderDisplay,
       senderInitial: senderDisplay.charAt(0).toUpperCase(),
     }
-  }, [inboxPreviewIndex, displayEmails, nameAndOffer, targetAndRole, emailCardBodies])
+  }, [inboxPreviewIndex, displayEmails, nameAndOffer, targetAndRole, emailCardSubjects, emailCardBodies])
 
   useEffect(() => {
     if (!loading) {
@@ -767,8 +771,11 @@ function App() {
   useEffect(() => {
     const source = emails ?? PLACEHOLDER_EMAILS
     const bodies = source.map((e) => e.body)
+    const subjects = source.map((e) => e.subject ?? '')
     setEmailCardBodies(bodies)
     setEmailCardOriginalBodies(bodies)
+    setEmailCardSubjects(subjects)
+    setEmailCardOriginalSubjects(subjects)
   }, [emails])
 
   const clearFormAndResults = () => {
@@ -863,6 +870,7 @@ function App() {
   const handleCopyAll = useCallback(() => {
     const merged = displayEmails.map((e, i) => ({
       ...e,
+      subject: emailCardSubjects[i] ?? e.subject,
       body: emailCardBodies[i] ?? e.body,
     }))
     const text = buildCopyAllEmailsText(merged)
@@ -873,12 +881,12 @@ function App() {
       setShowCopyAllToast(false)
       copyAllToastTimerRef.current = null
     }, 2000)
-  }, [displayEmails, emailCardBodies])
+  }, [displayEmails, emailCardSubjects, emailCardBodies])
 
   const handleDownloadPdf = useCallback(() => {
     const merged = displayEmails.map((e, i) => ({
       title: e.title,
-      subject: e.subject ?? '',
+      subject: emailCardSubjects[i] ?? e.subject ?? '',
       body: emailCardBodies[i] ?? e.body ?? '',
     }))
     generateColdMailPdf({
@@ -893,7 +901,7 @@ function App() {
           ? window.location.origin
           : 'https://coldmail.ai',
     })
-  }, [displayEmails, emailCardBodies, nameAndOffer, targetAndRole, goal, industry, tone])
+  }, [displayEmails, emailCardSubjects, emailCardBodies, nameAndOffer, targetAndRole, goal, industry, tone])
 
   const handleRegenerate = () => {
     setEmails(null)
@@ -939,7 +947,7 @@ function App() {
     (index) => {
       const email = displayEmails[index]
       const body = emailCardBodies[index] ?? email.body
-      const subject = email.subject ?? ''
+      const subject = emailCardSubjects[index] ?? email.subject ?? ''
       const entry = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
         savedAt: Date.now(),
@@ -976,7 +984,7 @@ function App() {
         }, 2000)
       })
     },
-    [displayEmails, emailCardBodies, nameAndOffer, targetAndRole, goal, industry, tone],
+    [displayEmails, emailCardSubjects, emailCardBodies, nameAndOffer, targetAndRole, goal, industry, tone],
   )
 
   const handleDeleteSavedEmail = useCallback((id) => {
@@ -1478,28 +1486,51 @@ function App() {
                     <StarBookmarkIcon filled={bookmarkFlashIndex === index} />
                   </button>
                 </div>
-                {email.subject?.trim() ? (
-                  <div className="mb-4 rounded-lg border border-amber-400/55 bg-amber-50 px-3 py-2.5 shadow-sm">
-                    <div className="flex items-start gap-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-bold text-amber-950">
-                          Subject
-                        </p>
-                        <p className="mt-1 text-sm font-medium text-slate-900 leading-snug">
-                          Subject: {email.subject}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleCopySubject(email.subject, index)}
-                        className="shrink-0 rounded-md bg-amber-200/90 px-2.5 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-200 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-amber-50"
-                        aria-label={`Copy subject for ${email.title}`}
-                      >
-                        {copiedSubjectIndex === index ? 'Copied!' : 'Copy'}
-                      </button>
-                    </div>
+                <div className="mb-4 rounded-lg border border-amber-400/55 bg-amber-50 px-3 py-2 shadow-sm">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-1">
+                    Subject line
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={emailCardSubjects[index] ?? ''}
+                      onChange={(e) => {
+                        const next = e.target.value
+                        setEmailCardSubjects((prev) => {
+                          const copy = [...prev]
+                          copy[index] = next
+                          return copy
+                        })
+                      }}
+                      placeholder="Enter subject line…"
+                      aria-label={`Subject line for ${email.title}`}
+                      className="flex-1 min-w-0 bg-transparent text-sm font-medium text-slate-900 placeholder-amber-700/40 focus:outline-none leading-snug py-0.5"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleCopySubject(emailCardSubjects[index] ?? '', index)}
+                      className="shrink-0 rounded-md bg-amber-200/90 px-2.5 py-1 text-xs font-semibold text-amber-950 hover:bg-amber-200 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-amber-50"
+                      aria-label={`Copy subject for ${email.title}`}
+                    >
+                      {copiedSubjectIndex === index ? 'Copied!' : 'Copy'}
+                    </button>
                   </div>
-                ) : null}
+                  {(emailCardSubjects[index] ?? '') !== (emailCardOriginalSubjects[index] ?? '') && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEmailCardSubjects((prev) => {
+                          const copy = [...prev]
+                          copy[index] = emailCardOriginalSubjects[index] ?? ''
+                          return copy
+                        })
+                      }
+                      className="mt-1 text-[11px] font-medium text-amber-700 hover:text-amber-900 transition-colors focus:outline-none"
+                    >
+                      Undo edit
+                    </button>
+                  )}
+                </div>
                 <div className="relative group/body mb-2 flex-1 min-h-[8rem] flex flex-col">
                   <p
                     className="pointer-events-none absolute right-2 top-2 z-[1] text-[11px] text-slate-500 opacity-0 transition-opacity duration-200 group-hover/body:opacity-100 group-focus-within/body:opacity-0"
@@ -1543,7 +1574,7 @@ function App() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleCopy({ ...email, body: emailCardBodies[index] ?? email.body }, index)}
+                  onClick={() => handleCopy({ ...email, subject: emailCardSubjects[index] ?? email.subject, body: emailCardBodies[index] ?? email.body }, index)}
                   className="w-full py-3 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 active:scale-[0.98]"
                 >
                   {copiedIndex === index ? 'Copied!' : 'Copy'}
