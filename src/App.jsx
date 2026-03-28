@@ -558,6 +558,74 @@ Rules:
   return content[0].text.trim()
 }
 
+const LENGTH_SLIDER_MIN = 30
+const LENGTH_SLIDER_MAX = 150
+const LENGTH_SLIDER_DEFAULT = 75
+
+/** Returns a CSS linear-gradient string for a filled range-input track. */
+function sliderTrackStyle(value, min, max) {
+  const pct = ((value - min) / (max - min)) * 100
+  return {
+    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${pct}%, #334155 ${pct}%, #334155 100%)`,
+  }
+}
+
+async function rewriteEmailToLength(emailBody, targetWordCount, toneLabel, nameAndOffer, targetAndRole, goal, voiceProfile = null) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const firstName = senderName.split(/\s+/)[0] || senderName
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 700,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Rewrite the cold email below to be approximately ${targetWordCount} words. Preserve the hook, value proposition, CTA, and sign-off format exactly.
+
+SENDER: ${senderName}
+PRODUCT/SERVICE: ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+
+ORIGINAL EMAIL:
+---
+${emailBody}
+---
+
+Rules:
+- Target: approximately ${targetWordCount} words total (sign-off "Best,\\n${firstName}" included; ±10 words is acceptable)
+- If trimming: cut filler sentences and tighten phrasing — never remove the CTA or sign-off
+- If expanding: add specific supporting context or a credible detail — no generic padding
+- Return ONLY the rewritten email body — no subject line, no labels, no markdown, no extra commentary`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
 /** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
 function parseNameAndOffer(input) {
   const trimmed = (input || '').trim()
@@ -571,7 +639,7 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '') {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT) {
   const personalizationBlock = prospectFirstName.trim()
     ? `\nPERSONALIZATION (Email 1 only): Use the literal token {{firstName}} wherever you include the prospect's first name in Email 1's opening greeting and in the subject_short field. Do not write the actual name — write {{firstName}} exactly so it can be dynamically replaced. Example opening: "Hi {{firstName}}," — example subject: "Quick question for {{firstName}} at [Company]". Do NOT use {{firstName}} in Email 2 or Email 3.`
     : ''
@@ -583,7 +651,8 @@ SENDER'S PRODUCT OR SERVICE (describe/reference this separately in the body, not
 TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
-Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.${personalizationBlock}
+Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
+TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${personalizationBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -599,7 +668,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null) {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT) {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -611,10 +680,10 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
     },
     body: JSON.stringify({
       model: 'claude-opus-4-5',
-      max_tokens: 1500,
+      max_tokens: 1800,
       system: buildSystemPromptWithTone(toneLabel, voiceProfile),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount) },
       ],
     }),
   })
@@ -921,6 +990,12 @@ function App() {
   const [psLoading, setPsLoading] = useState(() => ({ 0: false, 2: false }))
   const [psStyles, setPsStyles] = useState(() => ({ 0: 'urgency', 2: 'social_proof' }))
 
+  const [targetLength, setTargetLength] = useState(LENGTH_SLIDER_DEFAULT)
+  const [cardTargetLengths, setCardTargetLengths] = useState(() => [LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
+  const [cardAppliedLengths, setCardAppliedLengths] = useState(() => [LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
+  const [cardLengthLoading, setCardLengthLoading] = useState(() => [false, false, false])
+  const [cardLengthError, setCardLengthError] = useState(() => [null, null, null])
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -997,6 +1072,14 @@ function App() {
     setEmailCardOriginalBodies(bodies)
     setEmailCardSubjects(subjects)
     setEmailCardOriginalSubjects(subjects)
+
+    // Sync card-level length sliders to current global target
+    if (emails !== null) {
+      setCardTargetLengths([targetLength, targetLength, targetLength])
+      setCardAppliedLengths([targetLength, targetLength, targetLength])
+      setCardLengthLoading([false, false, false])
+      setCardLengthError([null, null, null])
+    }
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -1037,6 +1120,10 @@ function App() {
     setPsLines({ 0: null, 2: null })
     setPsLoading({ 0: false, 2: false })
     setPsStyles({ 0: 'urgency', 2: 'social_proof' })
+    setCardTargetLengths([LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
+    setCardAppliedLengths([LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
+    setCardLengthLoading([false, false, false])
+    setCardLengthError([null, null, null])
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1080,7 +1167,7 @@ function App() {
     setVariantCopiedIndex(null)
     const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile)
+      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength)
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -1232,6 +1319,25 @@ function App() {
         .finally(() => setPsLoading((prev) => ({ ...prev, [index]: false })))
     },
     [emailCardBodies, displayEmails, psStyles, targetAndRole, goal, industry, tone, voiceProfile],
+  )
+
+  const handleApplyLength = useCallback(
+    async (index) => {
+      const emailBody = emailCardBodies[index] ?? ''
+      const targetWC = cardTargetLengths[index]
+      setCardLengthLoading((prev) => { const next = [...prev]; next[index] = true; return next })
+      setCardLengthError((prev) => { const next = [...prev]; next[index] = null; return next })
+      try {
+        const newBody = await rewriteEmailToLength(emailBody, targetWC, tone, nameAndOffer, targetAndRole, goal, voiceProfile)
+        setEmailCardBodies((prev) => { const next = [...prev]; next[index] = newBody; return next })
+        setCardAppliedLengths((prev) => { const next = [...prev]; next[index] = targetWC; return next })
+      } catch (err) {
+        setCardLengthError((prev) => { const next = [...prev]; next[index] = err.message || 'Rewrite failed.'; return next })
+      } finally {
+        setCardLengthLoading((prev) => { const next = [...prev]; next[index] = false; return next })
+      }
+    },
+    [emailCardBodies, cardTargetLengths, tone, nameAndOffer, targetAndRole, goal, voiceProfile],
   )
 
   const undoEmailCardEdits = (index) => {
@@ -1796,6 +1902,32 @@ function App() {
             </div>
           </div>
 
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-2">
+              <label htmlFor="target-length" className="text-sm font-medium text-slate-300">
+                Target Email Length
+              </label>
+              <span className="text-sm tabular-nums font-semibold text-blue-400">{targetLength} words</span>
+            </div>
+            <input
+              type="range"
+              id="target-length"
+              min={LENGTH_SLIDER_MIN}
+              max={LENGTH_SLIDER_MAX}
+              step={5}
+              value={targetLength}
+              onChange={(e) => setTargetLength(Number(e.target.value))}
+              disabled={loading}
+              style={sliderTrackStyle(targetLength, LENGTH_SLIDER_MIN, LENGTH_SLIDER_MAX)}
+              className="w-full h-1.5 rounded-full appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:shadow [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-blue-500 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
+            />
+            <div className="flex justify-between mt-1.5">
+              <span className="text-xs text-slate-500">{LENGTH_SLIDER_MIN} words</span>
+              <span className="text-xs text-slate-500 text-center">shorter ← → longer</span>
+              <span className="text-xs text-slate-500">{LENGTH_SLIDER_MAX} words</span>
+            </div>
+          </div>
+
           <div className="mt-6 rounded-xl border border-slate-700/50 bg-slate-700/20 px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1992,9 +2124,50 @@ function App() {
                     className="w-full flex-1 min-h-[8rem] rounded-lg border border-transparent bg-transparent text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 hover:bg-slate-900/25 focus:outline-none focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-2 focus:ring-sky-400/35"
                   />
                 </div>
-                <p className="text-xs text-slate-500 tabular-nums text-right mb-2">
-                  {countWords(emailCardBodies[index] ?? '')} words · {(emailCardBodies[index] ?? '').length} chars
-                </p>
+                {/* Per-card length slider */}
+                {showGeneratedResults ? (
+                  <div className="mt-1 mb-3">
+                    <div className="flex items-center gap-2.5 mb-1.5">
+                      <input
+                        type="range"
+                        min={LENGTH_SLIDER_MIN}
+                        max={LENGTH_SLIDER_MAX}
+                        step={5}
+                        value={cardTargetLengths[index]}
+                        onChange={(e) => {
+                          const v = Number(e.target.value)
+                          setCardTargetLengths((prev) => { const next = [...prev]; next[index] = v; return next })
+                        }}
+                        disabled={cardLengthLoading[index]}
+                        style={sliderTrackStyle(cardTargetLengths[index], LENGTH_SLIDER_MIN, LENGTH_SLIDER_MAX)}
+                        className="flex-1 h-1 rounded-full appearance-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-blue-500 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
+                      />
+                      <span className="text-[11px] tabular-nums text-slate-400 shrink-0 w-20 text-right">
+                        <span className="text-slate-300 font-medium">{countWords(emailCardBodies[index] ?? '')}</span>
+                        {' / '}
+                        <span className="text-blue-400 font-medium">{cardTargetLengths[index]}</span>
+                        {' w'}
+                      </span>
+                    </div>
+                    {cardLengthError[index] && (
+                      <p className="text-[11px] text-red-400 mb-1.5 leading-snug">{cardLengthError[index]}</p>
+                    )}
+                    {cardTargetLengths[index] !== cardAppliedLengths[index] && (
+                      <button
+                        type="button"
+                        onClick={() => handleApplyLength(index)}
+                        disabled={cardLengthLoading[index]}
+                        className="w-full py-2 rounded-lg border border-blue-500/50 bg-blue-600/15 text-blue-300 text-xs font-semibold hover:bg-blue-600/25 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {cardLengthLoading[index] ? 'Rewriting…' : `Apply — rewrite to ~${cardTargetLengths[index]} words`}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500 tabular-nums text-right mb-2">
+                    {countWords(emailCardBodies[index] ?? '')} words · {(emailCardBodies[index] ?? '').length} chars
+                  </p>
+                )}
                 {(emailCardBodies[index] ?? '') !== (emailCardOriginalBodies[index] ?? '') && (
                   <button
                     type="button"
