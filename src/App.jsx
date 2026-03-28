@@ -686,6 +686,113 @@ Rules:
   return parsed.slice(0, 3).map((s) => String(s))
 }
 
+// ─── Drip Sequence ──────────────────────────────────────────────────────────
+
+const DRIP_SEQUENCE_SLOTS = [
+  { day: 0,  label: 'Day 0',  role: 'Cold Intro',       subjectKey: 'day0_subject',  bodyKey: 'day0_body'  },
+  { day: 3,  label: 'Day 3',  role: 'Follow-Up 1',      subjectKey: 'day3_subject',  bodyKey: 'day3_body'  },
+  { day: 7,  label: 'Day 7',  role: 'Value Add',         subjectKey: 'day7_subject',  bodyKey: 'day7_body'  },
+  { day: 10, label: 'Day 10', role: 'Objection Handler', subjectKey: 'day10_subject', bodyKey: 'day10_body' },
+  { day: 14, label: 'Day 14', role: 'Breakup Email',     subjectKey: 'day14_subject', bodyKey: 'day14_body' },
+]
+
+function buildDripSequenceUserMessage(senderName, senderOffer, targetAndRole, goal, industry, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
+  const first = senderName.split(/\s+/)[0] || senderName
+  const painPointBlock = painPoint.trim()
+    ? `\nPROSPECT PAIN POINT: ${painPoint.trim()}\nAddress this specific challenge naturally across the sequence — it should feel like you truly understand their situation.`
+    : ''
+  return `Generate a 5-email cold outreach drip sequence for the following situation:
+
+SENDER'S PERSONAL NAME (sign off with first name only): ${senderName}
+SENDER'S PRODUCT OR SERVICE (reference separately from the sender's name): ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+INDUSTRY CONTEXT: ${industry}
+TARGET WORD COUNT: Aim for ~${targetWordCount} words per email body (sign-off included; ±10 words is fine).${painPointBlock}
+
+Each email must have a DISTINCT angle, energy, and tone — no recycled sentences, no parallel openers, no templated structure.
+
+Angles (follow exactly):
+1. Day 0 — Cold Intro: Lead with a sharp hook. First touch, no prior context assumed. Open with a specific pain point or insight.
+2. Day 3 — Follow-Up 1: Add a NEW angle or piece of insight NOT mentioned in Email 1. Never say "just following up" or "bumping this up."
+3. Day 7 — Value Add: Share a concrete result, a specific case study outcome, or a genuinely useful resource. Make it feel generous, not salesy.
+4. Day 10 — Objection Handler: Pre-emptively address the most common reason this type of prospect has NOT replied. Validate the hesitation before offering a reframe.
+5. Day 14 — Breakup Email: Short and human. Give them permission to say no. Use reverse psychology — make walking away feel like their choice — then leave the door open.
+
+Return ONLY a JSON object (all string values, no markdown, no extra keys) with exactly these keys:
+- day0_subject, day0_body
+- day3_subject, day3_body
+- day7_subject, day7_body
+- day10_subject, day10_body
+- day14_subject, day14_body
+
+Every email body must sign off with only the sender's first name (e.g. "Best," then "${first}" on the next line). Never sign off with the product/business name.`
+}
+
+async function generateDripSequence(nameAndOffer, targetAndRole, goal, toneLabel, industry, voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 3500,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        { role: 'user', content: buildDripSequenceUserMessage(senderName, senderOffer, targetAndRole, goal, industry, targetWordCount, painPoint) },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  return DRIP_SEQUENCE_SLOTS.map((slot) => ({
+    day: slot.day,
+    label: slot.label,
+    role: slot.role,
+    subject: typeof parsed[slot.subjectKey] === 'string' ? parsed[slot.subjectKey] : '',
+    body: typeof parsed[slot.bodyKey] === 'string' ? parsed[slot.bodyKey] : '',
+  }))
+}
+
+function buildDripCsvContent(dripEmails) {
+  const header = 'day_number,subject,body'
+  const rows = dripEmails.map((e) => {
+    const escapeCsv = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`
+    return [e.day, escapeCsv(e.subject), escapeCsv(e.body)].join(',')
+  })
+  return [header, ...rows].join('\n')
+}
+
+function downloadCsv(content, filename) {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 /** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
 function parseNameAndOffer(input) {
   const trimmed = (input || '').trim()
@@ -1153,6 +1260,15 @@ function App() {
   const [cardLengthLoading, setCardLengthLoading] = useState(() => [false, false, false])
   const [cardLengthError, setCardLengthError] = useState(() => [null, null, null])
 
+  const [sequenceMode, setSequenceMode] = useState('standard') // 'standard' | 'drip'
+  const [dripEmails, setDripEmails] = useState(null)
+  const [dripLoading, setDripLoading] = useState(false)
+  const [dripError, setDripError] = useState(null)
+  const [dripActiveTab, setDripActiveTab] = useState(0)
+  const [dripCardBodies, setDripCardBodies] = useState(() => DRIP_SEQUENCE_SLOTS.map(() => ''))
+  const [dripCardSubjects, setDripCardSubjects] = useState(() => DRIP_SEQUENCE_SLOTS.map(() => ''))
+  const [dripCopiedIndex, setDripCopiedIndex] = useState(null)
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -1285,6 +1401,13 @@ function App() {
     setAiPainPoints([])
     setAiPainPointsError(null)
     setAiPainPointsLoading(false)
+    setDripEmails(null)
+    setDripError(null)
+    setDripLoading(false)
+    setDripActiveTab(0)
+    setDripCardBodies(DRIP_SEQUENCE_SLOTS.map(() => ''))
+    setDripCardSubjects(DRIP_SEQUENCE_SLOTS.map(() => ''))
+    setDripCopiedIndex(null)
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1320,6 +1443,32 @@ function App() {
     }
     setResultsSectionVisible(true)
     setError(null)
+    setDripError(null)
+
+    if (sequenceMode === 'drip') {
+      setDripLoading(true)
+      setDripEmails(null)
+      setDripActiveTab(0)
+      try {
+        const result = await generateDripSequence(nameAndOffer, targetAndRole, goal, tone, industry, voiceProfile, targetLength, painPoint)
+        setDripEmails(result)
+        setDripCardBodies(result.map((e) => e.body))
+        setDripCardSubjects(result.map((e) => e.subject))
+        if (!unlocked) {
+          const newCount = usageCount + 1
+          setUsageCount(newCount)
+          setStoredUsage(newCount)
+          if (newCount >= FREE_GENERATIONS_LIMIT) setShowUpgradeModal(true)
+        }
+      } catch (err) {
+        setDripError(err.message || 'Something went wrong.')
+        setDripEmails(null)
+      } finally {
+        setDripLoading(false)
+      }
+      return
+    }
+
     setLoading(true)
     setEmails(null)
     setEmail1RawForPreview(null)
@@ -1401,6 +1550,18 @@ function App() {
           : 'https://coldmail.ai',
     })
   }, [displayEmails, emailCardSubjects, emailCardBodies, nameAndOffer, targetAndRole, goal, industry, tone])
+
+  const handleExportDripCsv = useCallback(() => {
+    if (!dripEmails) return
+    const merged = dripEmails.map((e, i) => ({
+      ...e,
+      subject: dripCardSubjects[i] ?? e.subject,
+      body: dripCardBodies[i] ?? e.body,
+    }))
+    const csv = buildDripCsvContent(merged)
+    const slug = targetAndRole.trim().slice(0, 30).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sequence'
+    downloadCsv(csv, `coldmail-sequence-${slug}.csv`)
+  }, [dripEmails, dripCardSubjects, dripCardBodies, targetAndRole])
 
   const handleRegenerate = () => {
     setEmails(null)
@@ -2259,9 +2420,57 @@ function App() {
           style={{ transitionDuration: `${RESULTS_SECTION_FADE_MS}ms` }}
           onTransitionEnd={handleResultsSectionTransitionEnd}
         >
-          <h2 className="text-xl font-semibold text-slate-200 mb-5 sm:mb-6">
-            Generated Emails
-          </h2>
+          {/* Sequence mode toggle */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 sm:mb-6">
+            <h2 className="text-xl font-semibold text-slate-200">
+              {sequenceMode === 'drip' ? 'Full Drip Sequence' : 'Generated Emails'}
+            </h2>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSequenceMode('standard')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  sequenceMode === 'standard'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-700/70 text-slate-300 hover:bg-slate-700 border border-slate-600'
+                }`}
+              >
+                Standard — 3 emails
+              </button>
+              {unlocked ? (
+                <button
+                  type="button"
+                  onClick={() => setSequenceMode('drip')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    sequenceMode === 'drip'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-700/70 text-slate-300 hover:bg-slate-700 border border-slate-600'
+                  }`}
+                >
+                  Full Sequence — 5 emails
+                </button>
+              ) : (
+                <a
+                  href="https://garell.gumroad.com/l/cfjno"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700/70 text-slate-400 border border-slate-600 hover:border-slate-500 hover:text-slate-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  title="Unlock Full Sequence — Pro Feature"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                    <path d="M7 11V7a5 5 0 0110 0v4" />
+                  </svg>
+                  Full Sequence
+                  <span className="rounded-full bg-amber-500/20 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 leading-none">Pro</span>
+                </a>
+              )}
+            </div>
+          </div>
+
+          {/* Standard mode — 3-email grid + actions + variants */}
+          {sequenceMode === 'standard' && (
+          <>
           <div
             key={showGeneratedResults ? 'generated' : 'placeholder'}
             className={`grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6 ${showGeneratedResults ? 'animate-fade-in' : ''}`}
@@ -2662,7 +2871,174 @@ function App() {
             </details>
           )}
 
-          {showGeneratedResults && !shareBannerDismissed && (
+          </>
+          )} {/* end sequenceMode === 'standard' */}
+
+          {/* Drip sequence mode */}
+          {sequenceMode === 'drip' && (
+            <div>
+              {dripLoading && (
+                <div className="flex flex-col items-center justify-center py-20 gap-4">
+                  <svg className="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <p className="text-slate-400 text-sm">Writing 5-email sequence…</p>
+                </div>
+              )}
+              {dripError && (
+                <div className="rounded-xl border border-red-700/40 bg-red-900/30 p-4 text-red-200 text-sm mb-6" role="alert">
+                  {dripError}
+                </div>
+              )}
+              {!dripLoading && !dripEmails && !dripError && (
+                <div className="flex flex-col items-center justify-center py-20 gap-3 text-center">
+                  <p className="text-slate-300 font-medium">Full Sequence mode is active</p>
+                  <p className="text-slate-400 text-sm max-w-sm leading-snug">
+                    Click <strong className="text-slate-200">Generate</strong> to create your 5-email drip sequence.
+                  </p>
+                </div>
+              )}
+              {dripEmails && !dripLoading && (
+                <div className="animate-fade-in">
+                  {/* Day tabs */}
+                  <div className="flex gap-1.5 overflow-x-auto pb-1 mb-5 scrollbar-hide">
+                    {DRIP_SEQUENCE_SLOTS.map((slot, i) => (
+                      <button
+                        key={slot.day}
+                        type="button"
+                        onClick={() => setDripActiveTab(i)}
+                        className={`shrink-0 flex flex-col items-center px-4 py-2 rounded-xl border text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                          dripActiveTab === i
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-slate-800/70 border-slate-700 text-slate-300 hover:border-slate-600 hover:text-white'
+                        }`}
+                      >
+                        <span className="font-bold">{slot.label}</span>
+                        <span className={`text-[10px] mt-0.5 ${dripActiveTab === i ? 'text-blue-200' : 'text-slate-500'}`}>{slot.role}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Active email card */}
+                  {(() => {
+                    const slot = DRIP_SEQUENCE_SLOTS[dripActiveTab]
+                    const email = dripEmails[dripActiveTab]
+                    if (!email) return null
+                    return (
+                      <div className="bg-slate-800/90 rounded-xl border border-slate-700/50 p-5 sm:p-6 flex flex-col shadow-lg shadow-black/10">
+                        {/* Header */}
+                        <div className="flex items-start justify-between gap-2 mb-4">
+                          <div>
+                            <h3 className="text-base font-semibold text-blue-400">{slot.label} — {slot.role}</h3>
+                            <p className="text-xs text-slate-500 mt-0.5">Send {slot.day === 0 ? 'on day 0 (first touch)' : `on day ${slot.day}`}</p>
+                          </div>
+                          <span className="shrink-0 rounded-full border border-slate-600 bg-slate-700/60 px-2.5 py-1 text-[11px] font-medium text-slate-300 tabular-nums">
+                            {dripActiveTab + 1} / {DRIP_SEQUENCE_SLOTS.length}
+                          </span>
+                        </div>
+
+                        {/* Subject */}
+                        <div className="mb-4 rounded-lg border border-amber-400/55 bg-amber-50 px-3 py-2 shadow-sm">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-1">Subject line</p>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={dripCardSubjects[dripActiveTab] ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setDripCardSubjects((prev) => { const next = [...prev]; next[dripActiveTab] = v; return next })
+                              }}
+                              placeholder="Enter subject line…"
+                              aria-label={`Subject for ${slot.label}`}
+                              className="flex-1 min-w-0 bg-transparent text-sm font-medium text-slate-900 placeholder-amber-700/40 focus:outline-none leading-snug py-0.5"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Body */}
+                        <div className="relative group/body mb-3 flex-1 min-h-[12rem] flex flex-col">
+                          <p className="pointer-events-none absolute right-2 top-2 z-[1] text-[11px] text-slate-500 opacity-0 transition-opacity duration-200 group-hover/body:opacity-100 group-focus-within/body:opacity-0" aria-hidden="true">
+                            Click to edit
+                          </p>
+                          <textarea
+                            value={dripCardBodies[dripActiveTab] ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              setDripCardBodies((prev) => { const next = [...prev]; next[dripActiveTab] = v; return next })
+                            }}
+                            aria-label={`${slot.label} email body`}
+                            rows={12}
+                            className="w-full flex-1 min-h-[12rem] rounded-lg border border-transparent bg-transparent text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 hover:bg-slate-900/25 focus:outline-none focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-2 focus:ring-sky-400/35"
+                          />
+                        </div>
+                        <p className="text-xs text-slate-500 tabular-nums text-right mb-4">
+                          {countWords(dripCardBodies[dripActiveTab] ?? '')} words
+                        </p>
+
+                        {/* Nav + copy row */}
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setDripActiveTab((t) => Math.max(0, t - 1))}
+                            disabled={dripActiveTab === 0}
+                            className="px-4 py-2.5 rounded-xl border border-slate-600 bg-slate-700/50 text-slate-300 text-sm font-medium hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500"
+                          >
+                            ← Prev
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const subj = dripCardSubjects[dripActiveTab] ?? ''
+                              const body = dripCardBodies[dripActiveTab] ?? ''
+                              const text = subj ? `Subject: ${subj}\n\n${body}` : body
+                              navigator.clipboard.writeText(text)
+                              setDripCopiedIndex(dripActiveTab)
+                              window.setTimeout(() => setDripCopiedIndex(null), 2000)
+                            }}
+                            className="flex-1 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 active:scale-[0.98]"
+                          >
+                            {dripCopiedIndex === dripActiveTab ? 'Copied!' : 'Copy This Email'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDripActiveTab((t) => Math.min(DRIP_SEQUENCE_SLOTS.length - 1, t + 1))}
+                            disabled={dripActiveTab === DRIP_SEQUENCE_SLOTS.length - 1}
+                            className="px-4 py-2.5 rounded-xl border border-slate-600 bg-slate-700/50 text-slate-300 text-sm font-medium hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500"
+                          >
+                            Next →
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
+                  {/* Drip action buttons */}
+                  <div className="mt-8 flex flex-col sm:flex-row flex-wrap justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleExportDripCsv}
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl border border-emerald-500/50 bg-emerald-600/15 text-emerald-300 font-medium text-sm hover:bg-emerald-600/25 hover:border-emerald-500/70 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 active:scale-[0.98]"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Export Full Sequence (CSV)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setDripEmails(null); setDripError(null) }}
+                      className="px-6 py-3 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-white font-medium text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-slate-500 active:scale-[0.98]"
+                    >
+                      Regenerate Sequence
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(showGeneratedResults || dripEmails) && !shareBannerDismissed && (
             <div className="mt-8 rounded-xl border border-slate-700/60 bg-slate-800/40 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4 animate-fade-in">
               <p className="flex-1 text-sm text-slate-300 leading-snug">
                 <span className="font-semibold text-slate-100">Know someone who sends cold emails?</span>{' '}
