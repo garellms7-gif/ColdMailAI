@@ -490,6 +490,74 @@ async function analyzeVoiceProfile(emailSamples) {
   return parseEmailJson(content[0].text)
 }
 
+const PS_STYLES = ['urgency', 'social_proof', 'secondary_cta']
+const PS_STYLE_LABELS = { urgency: 'Urgency', social_proof: 'Social proof', secondary_cta: 'Alt. CTA' }
+/** Email card indices (0-based) that receive a P.S. line — Email 1 and Email 3 */
+const PS_EMAIL_INDICES = [0, 2]
+
+async function generatePsLine(emailBody, targetAndRole, goal, industry, psStyle, toneLabel, voiceProfile = null) {
+  const styleInstructions = {
+    urgency:
+      'Urgency: write a specific, believable time-sensitive reason to act soon — tie it to something contextual like a deadline, capacity, or timing related to their situation. Avoid vague phrases like "limited time."',
+    social_proof:
+      'Social proof: write a concrete result or outcome a real customer or client achieved — be specific about what changed (e.g., metric, time, outcome). Do not use vague language like "many clients love this."',
+    secondary_cta:
+      'Secondary CTA (lower commitment): offer a lower-friction alternative to the main ask — e.g., a yes/no reply, a short resource, or a 10-minute chat instead of a full call. Make it feel easy to say yes to.',
+  }
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 120,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Here is a cold email body:
+---
+${emailBody}
+---
+
+Target: ${targetAndRole}
+Goal: ${goal}
+Industry: ${industry}
+
+Write a single P.S. line using this angle:
+${styleInstructions[psStyle]}
+
+Rules:
+- Start with exactly "P.S."
+- 1–2 sentences maximum
+- Match the email's tone
+- Do NOT repeat the main CTA verbatim
+- Return ONLY the P.S. line as plain text — no quotes, no markdown`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
 /** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
 function parseNameAndOffer(input) {
   const trimmed = (input || '').trim()
@@ -849,6 +917,10 @@ function App() {
   const [voiceAnalyzing, setVoiceAnalyzing] = useState(false)
   const [voiceAnalysisError, setVoiceAnalysisError] = useState(null)
 
+  const [psLines, setPsLines] = useState(() => ({ 0: null, 2: null }))
+  const [psLoading, setPsLoading] = useState(() => ({ 0: false, 2: false }))
+  const [psStyles, setPsStyles] = useState(() => ({ 0: 'urgency', 2: 'social_proof' }))
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -927,6 +999,25 @@ function App() {
     setEmailCardOriginalSubjects(subjects)
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!emails) return
+    const initialStyles = { 0: 'urgency', 2: 'social_proof' }
+    setPsStyles(initialStyles)
+    setPsLines({ 0: null, 2: null })
+    setPsLoading({ 0: true, 2: true })
+    PS_EMAIL_INDICES.forEach((idx) => {
+      const emailBody = emails[idx]?.body ?? ''
+      if (!emailBody) {
+        setPsLoading((prev) => ({ ...prev, [idx]: false }))
+        return
+      }
+      generatePsLine(emailBody, targetAndRole, goal, industry, initialStyles[idx], tone, voiceProfile)
+        .then((text) => setPsLines((prev) => ({ ...prev, [idx]: text })))
+        .catch(() => { /* silent — P.S. is an enhancement, not required */ })
+        .finally(() => setPsLoading((prev) => ({ ...prev, [idx]: false })))
+    })
+  }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -943,6 +1034,9 @@ function App() {
     setVariantsLoading(false)
     setVariantCopiedIndex(null)
     setVariantsExpanded(true)
+    setPsLines({ 0: null, 2: null })
+    setPsLoading({ 0: false, 2: false })
+    setPsStyles({ 0: 'urgency', 2: 'social_proof' })
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1004,13 +1098,18 @@ function App() {
     }
   }
 
-  const handleCopy = useCallback((email, index) => {
-    const text = formatSingleEmailForClipboard(email)
-    navigator.clipboard.writeText(text)
-    setCopiedSubjectIndex(null)
-    setCopiedIndex(index)
-    window.setTimeout(() => setCopiedIndex(null), 2000)
-  }, [])
+  const handleCopy = useCallback(
+    (email, index) => {
+      const ps = PS_EMAIL_INDICES.includes(index) && psLines[index] ? psLines[index] : null
+      const emailWithPs = ps ? { ...email, body: `${email.body}\n\n${ps}` } : email
+      const text = formatSingleEmailForClipboard(emailWithPs)
+      navigator.clipboard.writeText(text)
+      setCopiedSubjectIndex(null)
+      setCopiedIndex(index)
+      window.setTimeout(() => setCopiedIndex(null), 2000)
+    },
+    [psLines],
+  )
 
   const handleCopySubject = useCallback((subjectLine, index) => {
     navigator.clipboard.writeText(subjectLine)
@@ -1119,6 +1218,21 @@ function App() {
     setVoiceSampleText('')
     setVoiceAnalysisError(null)
   }
+
+  const handleRefreshPs = useCallback(
+    (index) => {
+      const emailBody = emailCardBodies[index] ?? displayEmails[index]?.body ?? ''
+      const nextStyle = PS_STYLES[(PS_STYLES.indexOf(psStyles[index]) + 1) % PS_STYLES.length]
+      setPsStyles((prev) => ({ ...prev, [index]: nextStyle }))
+      setPsLoading((prev) => ({ ...prev, [index]: true }))
+      setPsLines((prev) => ({ ...prev, [index]: null }))
+      generatePsLine(emailBody, targetAndRole, goal, industry, nextStyle, tone, voiceProfile)
+        .then((text) => setPsLines((prev) => ({ ...prev, [index]: text })))
+        .catch(() => { /* silent */ })
+        .finally(() => setPsLoading((prev) => ({ ...prev, [index]: false })))
+    },
+    [emailCardBodies, displayEmails, psStyles, targetAndRole, goal, industry, tone, voiceProfile],
+  )
 
   const undoEmailCardEdits = (index) => {
     setEmailCardBodies((prev) => {
@@ -1889,6 +2003,46 @@ function App() {
                   >
                     Undo edits
                   </button>
+                )}
+                {/* P.S. section — Email 1 (index 0) and Email 3 (index 2) only */}
+                {showGeneratedResults && PS_EMAIL_INDICES.includes(index) && (
+                  <div className="mt-3 mb-2 pt-3 border-t border-slate-700/50">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold uppercase tracking-wide text-sky-400/80">P.S.</span>
+                        <span className="rounded-full border border-slate-600/60 bg-slate-700/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-400">
+                          {PS_STYLE_LABELS[psStyles[index]]}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRefreshPs(index)}
+                        disabled={psLoading[index]}
+                        title="Regenerate P.S. with next style"
+                        aria-label="Regenerate P.S. line"
+                        className="rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          viewBox="0 0 20 20"
+                          fill="currentColor"
+                          className={`h-3.5 w-3.5 ${psLoading[index] ? 'animate-spin' : ''}`}
+                          aria-hidden="true"
+                        >
+                          <path
+                            fillRule="evenodd"
+                            d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                    {psLoading[index] ? (
+                      <p className="text-xs text-slate-500 italic animate-pulse">Writing P.S…</p>
+                    ) : psLines[index] ? (
+                      <p className="text-xs text-sky-300/80 leading-relaxed">{psLines[index]}</p>
+                    ) : null}
+                  </div>
                 )}
                 <button
                   type="button"
