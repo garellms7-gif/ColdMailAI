@@ -13,6 +13,19 @@ const GUMROAD_LINK = 'https://garell.gumroad.com/l/cfjno' // Replace with your G
 const CHAR_LIMIT_NAME_OFFER = 300
 const CHAR_LIMIT_TARGET_ROLE = 120
 const CHAR_LIMIT_GOAL = 200
+const CHAR_LIMIT_PAIN_POINT = 150
+
+const PAIN_POINT_LIBRARY = {
+  SaaS:          ['Low trial conversions', 'High churn', 'Long sales cycles', 'Poor onboarding completion', 'Feature adoption gaps'],
+  Agency:        ['Inconsistent lead flow', 'Client churn', 'Project scope creep', 'Underpriced services', 'Difficulty scaling'],
+  eCommerce:     ['High cart abandonment', 'Low repeat purchases', 'Rising ad costs', 'Poor email open rates', 'Thin margins'],
+  'Real Estate': ['Inconsistent referrals', 'Slow follow-up', 'Low listing inventory', 'Long deal cycles', 'Lead quality'],
+  Recruiting:    ['Slow time-to-hire', 'Candidate ghosting', 'Poor job ad response', 'High cost-per-hire', 'Retention issues'],
+  Consulting:    ['Feast or famine revenue', 'Proposal rejection', 'Long sales cycles', 'Difficulty charging premium rates', 'No referral system'],
+  Finance:       ['Client acquisition costs', 'Compliance complexity', 'Low financial literacy in prospects', 'Trust barriers', 'Commoditized services'],
+  Healthcare:    ['Patient no-shows', 'Insurance complexity', 'Staff burnout', 'Low online visibility', 'Referral gaps'],
+}
+const PAIN_POINT_LIBRARY_INDUSTRIES = Object.keys(PAIN_POINT_LIBRARY)
 
 const VOICE_PROFILE_KEY = 'coldmailai_voice_profile'
 
@@ -626,6 +639,53 @@ Rules:
   return content[0].text.trim()
 }
 
+async function generateAiPainPoints(targetAndRole, industry) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 200,
+      messages: [
+        {
+          role: 'user',
+          content: `Generate exactly 3 specific, believable pain points for this prospect in a cold email context.
+
+Target: ${targetAndRole}
+Industry: ${industry}
+
+Rules:
+- Each pain point: 4–8 words, specific to this prospect type
+- No numbering, no bullets, no markdown
+- Return ONLY a JSON array of 3 strings — e.g. ["pain 1", "pain 2", "pain 3"]`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  if (!Array.isArray(parsed)) throw new Error('Unexpected response shape')
+  return parsed.slice(0, 3).map((s) => String(s))
+}
+
 /** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
 function parseNameAndOffer(input) {
   const trimmed = (input || '').trim()
@@ -639,9 +699,12 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT) {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
   const personalizationBlock = prospectFirstName.trim()
     ? `\nPERSONALIZATION (Email 1 only): Use the literal token {{firstName}} wherever you include the prospect's first name in Email 1's opening greeting and in the subject_short field. Do not write the actual name — write {{firstName}} exactly so it can be dynamically replaced. Example opening: "Hi {{firstName}}," — example subject: "Quick question for {{firstName}} at [Company]". Do NOT use {{firstName}} in Email 2 or Email 3.`
+    : ''
+  const painPointBlock = painPoint.trim()
+    ? `\nPROSPECT PAIN POINT: ${painPoint.trim()}\nLead with or address this specific challenge naturally in all three emails — it should feel like you understand their exact situation.`
     : ''
   return `Generate 3 cold emails for the following situation:
 
@@ -652,7 +715,7 @@ TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
 Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
-TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${personalizationBlock}
+TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${painPointBlock}${personalizationBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -668,7 +731,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT) {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -683,7 +746,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
       max_tokens: 1800,
       system: buildSystemPromptWithTone(toneLabel, voiceProfile),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount, painPoint) },
       ],
     }),
   })
@@ -1073,6 +1136,13 @@ function App() {
   const [voiceAnalyzing, setVoiceAnalyzing] = useState(false)
   const [voiceAnalysisError, setVoiceAnalysisError] = useState(null)
 
+  const [painPoint, setPainPoint] = useState('')
+  const [painPointModalOpen, setPainPointModalOpen] = useState(false)
+  const [painPointLibraryTab, setPainPointLibraryTab] = useState(PAIN_POINT_LIBRARY_INDUSTRIES[0])
+  const [aiPainPoints, setAiPainPoints] = useState([])
+  const [aiPainPointsLoading, setAiPainPointsLoading] = useState(false)
+  const [aiPainPointsError, setAiPainPointsError] = useState(null)
+
   const [psLines, setPsLines] = useState(() => ({ 0: null, 2: null }))
   const [psLoading, setPsLoading] = useState(() => ({ 0: false, 2: false }))
   const [psStyles, setPsStyles] = useState(() => ({ 0: 'urgency', 2: 'social_proof' }))
@@ -1211,6 +1281,10 @@ function App() {
     setCardAppliedLengths([LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
     setCardLengthLoading([false, false, false])
     setCardLengthError([null, null, null])
+    setPainPoint('')
+    setAiPainPoints([])
+    setAiPainPointsError(null)
+    setAiPainPointsLoading(false)
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1254,7 +1328,7 @@ function App() {
     setVariantCopiedIndex(null)
     const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength)
+      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint)
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -1393,6 +1467,33 @@ function App() {
     setVoiceAnalysisError(null)
   }
 
+  const openPainPointModal = () => {
+    setAiPainPoints([])
+    setAiPainPointsError(null)
+    setPainPointModalOpen(true)
+  }
+
+  const closePainPointModal = () => setPainPointModalOpen(false)
+
+  const selectPainPoint = (pt) => {
+    setPainPoint(pt)
+    closePainPointModal()
+  }
+
+  const handleGenerateAiPainPoints = async () => {
+    setAiPainPointsLoading(true)
+    setAiPainPointsError(null)
+    setAiPainPoints([])
+    try {
+      const pts = await generateAiPainPoints(targetAndRole.trim() || 'a business prospect', industry)
+      setAiPainPoints(pts)
+    } catch (err) {
+      setAiPainPointsError(err.message || 'Could not generate pain points.')
+    } finally {
+      setAiPainPointsLoading(false)
+    }
+  }
+
   const handleRefreshPs = useCallback(
     (index) => {
       const emailBody = emailCardBodies[index] ?? displayEmails[index]?.body ?? ''
@@ -1495,6 +1596,15 @@ function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [savedDrawerOpen])
+
+  useEffect(() => {
+    if (!painPointModalOpen) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') closePainPointModal()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [painPointModalOpen])
 
   useEffect(
     () => () => {
@@ -1902,6 +2012,42 @@ function App() {
                 hint="Tip: One clear ask — e.g. a 15-min intro call"
                 hintMinLength={15}
               />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <label htmlFor="pain-point" className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                  Prospect Pain Point
+                  <span className="text-[10px] font-normal text-slate-500 rounded-full border border-slate-600 px-1.5 py-0.5">optional</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={openPainPointModal}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600/80 bg-slate-700/40 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-700/70 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                    <path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1ZM6.5 5.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm3 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3ZM5.25 10.5a.75.75 0 0 0 0 1.5h5.5a.75.75 0 0 0 0-1.5h-5.5Z" />
+                  </svg>
+                  Browse Pain Points
+                </button>
+              </div>
+              <input
+                id="pain-point"
+                type="text"
+                value={painPoint}
+                onChange={(e) => setPainPoint(e.target.value)}
+                placeholder="e.g. High churn, long sales cycles…"
+                maxLength={CHAR_LIMIT_PAIN_POINT}
+                disabled={loading}
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+              />
+              <div className="mt-1 flex items-center justify-between">
+                <span className="text-xs text-slate-500 italic">Injected into every email's opening hook</span>
+                <span className={`text-xs tabular-nums ${painPoint.length > CHAR_LIMIT_PAIN_POINT - 10 ? 'text-red-400' : 'text-slate-500'}`}>
+                  {painPoint.length}/{CHAR_LIMIT_PAIN_POINT}
+                </span>
+              </div>
             </div>
 
             <div
@@ -2962,6 +3108,124 @@ function App() {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {painPointModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-[2px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pain-point-modal-title"
+          onClick={(e) => { if (e.target === e.currentTarget) closePainPointModal() }}
+        >
+          <div className="w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-slate-800 border border-slate-700 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between gap-3 border-b border-slate-700 px-5 py-4 shrink-0">
+              <div>
+                <h2 id="pain-point-modal-title" className="text-base font-semibold text-white">Pain Point Library</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Click any pain point to fill the field</p>
+              </div>
+              <button
+                type="button"
+                onClick={closePainPointModal}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-700 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                aria-label="Close"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Industry tabs */}
+            <div className="shrink-0 border-b border-slate-700 px-4 pt-3 pb-0">
+              <div className="flex gap-1 overflow-x-auto pb-3 scrollbar-hide">
+                {PAIN_POINT_LIBRARY_INDUSTRIES.map((ind) => (
+                  <button
+                    key={ind}
+                    type="button"
+                    onClick={() => setPainPointLibraryTab(ind)}
+                    className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                      painPointLibraryTab === ind
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white border border-slate-600'
+                    }`}
+                  >
+                    {ind}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Pain point pills */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {PAIN_POINT_LIBRARY[painPointLibraryTab].map((pt) => (
+                  <button
+                    key={pt}
+                    type="button"
+                    onClick={() => selectPainPoint(pt)}
+                    className="rounded-lg border border-slate-600 bg-slate-700/60 px-3 py-2 text-sm text-slate-200 hover:border-blue-500 hover:bg-blue-600/20 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {pt}
+                  </button>
+                ))}
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-slate-700 pt-4 mt-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">AI Generate</p>
+                    <p className="text-xs text-slate-400">Get 3 custom pain points based on your prospect info</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateAiPainPoints}
+                    disabled={aiPainPointsLoading}
+                    className="shrink-0 flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {aiPainPointsLoading ? (
+                      <>
+                        <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Generating…
+                      </>
+                    ) : (
+                      <>
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
+                        </svg>
+                        AI Generate
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {aiPainPointsError && (
+                  <p className="text-xs text-red-400 mb-2" role="alert">{aiPainPointsError}</p>
+                )}
+
+                {aiPainPoints.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {aiPainPoints.map((pt) => (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => selectPainPoint(pt)}
+                        className="rounded-lg border border-blue-500/40 bg-blue-600/15 px-3 py-2 text-sm text-blue-200 hover:border-blue-500 hover:bg-blue-600/30 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {pt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
