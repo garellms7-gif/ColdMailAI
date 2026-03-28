@@ -15,14 +15,13 @@ const CHAR_LIMIT_TARGET_ROLE = 120
 const CHAR_LIMIT_GOAL = 200
 
 const LOADING_MESSAGES = [
-  'Analyzing your target...',
+  'Analyzing your prospect...',
   'Crafting your hook...',
-  'Writing personalized version...',
-  'Polishing the follow-up...',
-  'Almost ready...',
+  'Writing follow-up strategy...',
+  'Polishing your sequence...',
 ]
 
-const LOADING_MESSAGE_INTERVAL_MS = 1500
+const LOADING_MESSAGE_INTERVAL_MS = 2500
 const LOADING_FADE_MS = 300
 const RESULTS_SECTION_FADE_MS = 500
 
@@ -1442,6 +1441,11 @@ function App() {
               Start Over
             </button>
           </div>
+          {loading && (
+            <div className="mt-3 h-1 w-full rounded-full bg-slate-700/60 overflow-hidden">
+              <div className="animate-loading-bar h-full rounded-full bg-blue-500" />
+            </div>
+          )}
         </div>
 
         {/* Results section */}
