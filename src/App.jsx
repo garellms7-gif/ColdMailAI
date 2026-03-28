@@ -10,7 +10,9 @@ const SAVED_EMAILS_WARN_AT = 18
 const VALID_UNLOCK_CODE = 'COLDMAIL2024'
 const GUMROAD_LINK = 'https://garell.gumroad.com/l/cfjno' // Replace with your Gumroad product URL
 
-const INPUT_TEXTAREA_MAX_CHARS = 200
+const CHAR_LIMIT_NAME_OFFER = 300
+const CHAR_LIMIT_TARGET_ROLE = 120
+const CHAR_LIMIT_GOAL = 200
 
 const LOADING_MESSAGES = [
   'Analyzing your target...',
@@ -622,30 +624,24 @@ const FORM_PROGRESS_BY_FILLED = [0, 33, 66, 100]
 function TextareaCharFooter({ length, max, hint, hintMinLength = 20 }) {
   const remaining = max - length
   const isOver = length > max
-  const atOrPastLimit = length >= max
-  const isLow = remaining > 0 && remaining < 20
+  const isNearLimit = remaining >= 0 && remaining < 20
   const showHint = typeof hint === 'string' && hint.length > 0 && length < hintMinLength
 
   let counterClass = 'text-xs block tabular-nums text-slate-500'
-  if (atOrPastLimit) {
+  if (isOver) {
     counterClass = 'text-xs block tabular-nums text-red-400 font-bold'
-  } else if (isLow) {
-    counterClass = 'text-xs block tabular-nums text-orange-400'
+  } else if (isNearLimit) {
+    counterClass = 'text-xs block tabular-nums text-red-400'
   }
 
   return (
     <div className="mt-1 space-y-1">
       <span className={counterClass} aria-live="polite">
-        {length} / {max} characters
+        {length} / {max}
       </span>
       {showHint && (
         <p className="text-xs text-slate-500 italic" aria-live="polite">
           {hint}
-        </p>
-      )}
-      {isOver && (
-        <p className="text-xs text-slate-400" role="status">
-          Shorter inputs = better emails
         </p>
       )}
     </div>
@@ -1266,7 +1262,7 @@ function App() {
               />
               <TextareaCharFooter
                 length={nameAndOffer.length}
-                max={INPUT_TEXTAREA_MAX_CHARS}
+                max={CHAR_LIMIT_NAME_OFFER}
                 hint="Tip: Be specific — e.g. John, freelance web designer"
               />
             </div>
@@ -1293,7 +1289,7 @@ function App() {
               />
               <TextareaCharFooter
                 length={targetAndRole.length}
-                max={INPUT_TEXTAREA_MAX_CHARS}
+                max={CHAR_LIMIT_TARGET_ROLE}
                 hint="Tip: Include their role — e.g. Marketing managers at SaaS startups"
               />
             </div>
@@ -1317,7 +1313,7 @@ function App() {
               />
               <TextareaCharFooter
                 length={goal.length}
-                max={INPUT_TEXTAREA_MAX_CHARS}
+                max={CHAR_LIMIT_GOAL}
                 hint="Tip: One clear ask — e.g. a 15-min intro call"
                 hintMinLength={15}
               />
