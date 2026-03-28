@@ -718,6 +718,10 @@ function App() {
   const displayEmails = emails ?? PLACEHOLDER_EMAILS
   const showGeneratedResults = emails !== null
 
+  const [shareBannerDismissed, setShareBannerDismissed] = useState(false)
+  const [shareLinkCopied, setShareLinkCopied] = useState(false)
+  const shareLinkCopiedTimerRef = useRef(null)
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -929,6 +933,16 @@ function App() {
     setCopiedSubjectIndex(null)
     setVariantCopiedIndex(index)
     window.setTimeout(() => setVariantCopiedIndex(null), 2000)
+  }, [])
+
+  const handleShareLinkCopy = useCallback(() => {
+    navigator.clipboard.writeText('https://garell.gumroad.com/l/cfjno')
+    setShareLinkCopied(true)
+    if (shareLinkCopiedTimerRef.current) window.clearTimeout(shareLinkCopiedTimerRef.current)
+    shareLinkCopiedTimerRef.current = window.setTimeout(() => {
+      setShareLinkCopied(false)
+      shareLinkCopiedTimerRef.current = null
+    }, 2000)
   }, [])
 
   const undoEmailCardEdits = (index) => {
@@ -1679,6 +1693,48 @@ function App() {
                 )}
               </div>
             </details>
+          )}
+
+          {showGeneratedResults && !shareBannerDismissed && (
+            <div className="mt-8 rounded-xl border border-slate-700/60 bg-slate-800/40 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-4 animate-fade-in">
+              <p className="flex-1 text-sm text-slate-300 leading-snug">
+                <span className="font-semibold text-slate-100">Know someone who sends cold emails?</span>{' '}
+                Share ColdMailAI.
+              </p>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleShareLinkCopy}
+                  className="rounded-lg border border-slate-600 bg-slate-700 hover:bg-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {shareLinkCopied ? 'Link copied!' : 'Copy Link'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.open('https://www.linkedin.com/shareArticle?mini=true&url=https%3A%2F%2Fgarell.gumroad.com%2Fl%2Fcfjno&summary=I%27ve%20been%20using%20ColdMailAI%20to%20generate%20high-converting%20cold%20emails%20in%20seconds.%20Check%20it%20out!', '_blank', 'noopener,noreferrer')}
+                  className="rounded-lg border border-blue-700/60 bg-blue-900/40 hover:bg-blue-800/60 px-3 py-1.5 text-xs font-semibold text-blue-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  Share on LinkedIn
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.open('https://twitter.com/intent/tweet?text=I%27ve%20been%20using%20ColdMailAI%20to%20generate%20high-converting%20cold%20emails%20in%20seconds.%20Check%20it%20out%3A%20https%3A%2F%2Fgarell.gumroad.com%2Fl%2Fcfjno', '_blank', 'noopener,noreferrer')}
+                  className="rounded-lg border border-slate-600 bg-slate-700 hover:bg-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  Share on X
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareBannerDismissed(true)}
+                aria-label="Dismiss"
+                className="self-start sm:self-center rounded-md p-1 text-slate-500 hover:text-slate-300 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+                  <path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
+                </svg>
+              </button>
+            </div>
           )}
         </section>
         )}
