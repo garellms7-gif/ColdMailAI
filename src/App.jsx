@@ -778,8 +778,8 @@ function App() {
     setNameAndOffer('')
     setTargetAndRole('')
     setGoal('Book a Call')
-    setIndustry('Other')
-    setTone('Conversational')
+    setIndustry('')
+    setTone('Professional')
     setEmails(null)
     setError(null)
     setCopiedIndex(null)
@@ -1433,14 +1433,16 @@ function App() {
                 {industry}
               </span>
             </div>
-            <button
-              type="button"
-              onClick={handleStartOverClick}
-              disabled={loading}
-              className="sm:w-44 shrink-0 py-4 rounded-xl font-semibold text-lg transition-all duration-200 flex items-center justify-center border border-slate-600 bg-slate-700/40 hover:bg-slate-700/70 active:scale-[0.99] text-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
-            >
-              Start Over
-            </button>
+            {showGeneratedResults && (
+              <button
+                type="button"
+                onClick={handleStartOverClick}
+                disabled={loading}
+                className="sm:w-44 shrink-0 py-4 rounded-xl font-semibold text-lg transition-all duration-200 flex items-center justify-center border border-slate-600 bg-slate-700/40 hover:bg-slate-700/70 active:scale-[0.99] text-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
+              >
+                Start Over
+              </button>
+            )}
           </div>
         </div>
 
