@@ -10,6 +10,10 @@ const SAVED_EMAILS_WARN_AT = 18
 const VALID_UNLOCK_CODE = 'COLDMAIL2024'
 const GUMROAD_LINK = 'https://garell.gumroad.com/l/cfjno' // Replace with your Gumroad product URL
 
+const HAS_VISITED_KEY = 'coldmailai_has_visited'
+const EMAILS_GENERATED_KEY = 'coldmailai_emails_generated_count'
+const EMAILS_GENERATED_SEED = 1247
+
 const CHAR_LIMIT_NAME_OFFER = 300
 const CHAR_LIMIT_TARGET_ROLE = 120
 const CHAR_LIMIT_GOAL = 200
@@ -78,6 +82,22 @@ function setStoredUnlocked(value) {
   }
 }
 
+function getHasVisited() {
+  try { return localStorage.getItem(HAS_VISITED_KEY) === 'true' } catch { return false }
+}
+function setHasVisitedStorage() {
+  try { localStorage.setItem(HAS_VISITED_KEY, 'true') } catch {}
+}
+function getEmailsGeneratedCount() {
+  try {
+    const n = parseInt(localStorage.getItem(EMAILS_GENERATED_KEY) || '0', 10)
+    return Number.isNaN(n) ? 0 : n
+  } catch { return 0 }
+}
+function setEmailsGeneratedCountStorage(n) {
+  try { localStorage.setItem(EMAILS_GENERATED_KEY, String(n)) } catch {}
+}
+
 function parseSavedEmailsList(raw) {
   try {
     const parsed = JSON.parse(raw || '[]')
@@ -136,6 +156,14 @@ const INDUSTRY_OPTIONS = [
   'Coaching',
   'Other',
 ]
+
+const DEMO_SCENARIO = {
+  nameAndOffer: 'Alex Chen, AI email tool that doubles reply rates — helps sales teams cut manual follow-up and book more calls from cold outreach',
+  targetAndRole: 'Growthly, Head of Growth',
+  goal: 'Book a 20-minute demo call to show how we fix low response rates on cold outreach',
+  industry: 'SaaS/Tech',
+  tone: 'Professional',
+}
 
 const EXAMPLE_SCENARIOS = [
   {
@@ -666,6 +694,9 @@ function App() {
   const [showUnlockInput, setShowUnlockInput] = useState(false)
   const [unlockCodeInput, setUnlockCodeInput] = useState('')
   const [unlockCodeError, setUnlockCodeError] = useState('')
+  const [socialProofCount, setSocialProofCount] = useState(
+    () => EMAILS_GENERATED_SEED + getEmailsGeneratedCount(),
+  )
   const [showCopyAllToast, setShowCopyAllToast] = useState(false)
   const copyAllToastTimerRef = useRef(null)
   const [loadingMsgIndex, setLoadingMsgIndex] = useState(0)
@@ -774,6 +805,48 @@ function App() {
     setEmailCardOriginalSubjects(subjects)
   }, [emails])
 
+  // First-visit onboarding: pre-fill demo values and auto-generate once
+  useEffect(() => {
+    if (getHasVisited()) return
+    setHasVisitedStorage()
+    setNameAndOffer(DEMO_SCENARIO.nameAndOffer)
+    setTargetAndRole(DEMO_SCENARIO.targetAndRole)
+    setGoal(DEMO_SCENARIO.goal)
+    setIndustry(DEMO_SCENARIO.industry)
+    setTone(DEMO_SCENARIO.tone)
+    setResultsSectionVisible(true)
+    setError(null)
+    setLoading(true)
+    setEmails(null)
+    setShortVariants(null)
+    setVariantsError(null)
+    setVariantCopiedIndex(null)
+    generateEmails(
+      DEMO_SCENARIO.nameAndOffer,
+      DEMO_SCENARIO.targetAndRole,
+      DEMO_SCENARIO.goal,
+      DEMO_SCENARIO.tone,
+      DEMO_SCENARIO.industry,
+    )
+      .then((result) => {
+        setEmails(result)
+        setSocialProofCount((prev) => {
+          const next = prev + 1
+          setEmailsGeneratedCountStorage(next - EMAILS_GENERATED_SEED)
+          return next
+        })
+        setUsageCount(1)
+        setStoredUsage(1)
+      })
+      .catch((err) => {
+        setError(err.message || 'Something went wrong.')
+        setEmails(null)
+      })
+      .finally(() => {
+        setLoading(false)
+      })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -832,6 +905,11 @@ function App() {
     try {
       const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry)
       setEmails(result)
+      setSocialProofCount((prev) => {
+        const next = prev + 1
+        setEmailsGeneratedCountStorage(next - EMAILS_GENERATED_SEED)
+        return next
+      })
       if (!unlocked) {
         const newCount = usageCount + 1
         setUsageCount(newCount)
@@ -1184,6 +1262,10 @@ function App() {
         }`}
       >
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 sm:py-12">
+        {/* Social proof counter */}
+        <p className="text-center text-slate-500 text-sm tabular-nums mb-4">
+          <span className="font-semibold text-slate-300">{socialProofCount.toLocaleString()}</span> emails generated today
+        </p>
         {/* Main card */}
         <div className="bg-slate-800/90 rounded-2xl border border-slate-700/50 p-6 sm:p-8 shadow-xl shadow-black/20">
           <h2 className="text-2xl sm:text-3xl font-semibold text-center text-white mb-3 sm:mb-4">
