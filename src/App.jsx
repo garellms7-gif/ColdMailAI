@@ -686,6 +686,82 @@ Rules:
   return parsed.slice(0, 3).map((s) => String(s))
 }
 
+// ─── Icebreakers ────────────────────────────────────────────────────────────
+
+const ICEBREAKER_ANGLES = ['recent_news', 'compliment', 'shared_connection', 'bold_claim', 'question']
+const ICEBREAKER_ANGLE_LABELS = {
+  recent_news:       'Recent news',
+  compliment:        'Compliment',
+  shared_connection: 'Shared connection',
+  bold_claim:        'Bold claim',
+  question:          'Question',
+}
+
+async function generateIcebreakers(targetAndRole, industry, emailBody, toneLabel, voiceProfile = null) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 500,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Generate 5 one-sentence icebreaker opening lines for a cold email.
+
+TARGET: ${targetAndRole}
+INDUSTRY: ${industry}
+
+Current email opener for context (do NOT reuse it):
+---
+${emailBody.split('\n\n')[0] ?? emailBody.slice(0, 300)}
+---
+
+Each icebreaker must use a DIFFERENT angle and work as a standalone first sentence that replaces the current opener:
+1. recent_news — Reference something plausibly happening in their industry right now; specific enough to feel credible, general enough to be accurate without research
+2. compliment — A genuine, specific observation about their company, product, or role (no hollow flattery like "love what you're doing")
+3. shared_connection — Reference a mutual context: a community, event, trend, or shared experience relevant to their industry
+4. bold_claim — A surprising or counterintuitive statement that challenges a common assumption in their industry
+5. question — Open with curiosity; a sharp, specific question directly relevant to their situation that earns a reply
+
+Rules:
+- 1 sentence each — no "I wanted to reach out" or "I hope this finds you well" starts
+- Each must stand alone as an engaging cold email opener
+- Return ONLY a valid JSON array of exactly 5 objects: [{"angle":"recent_news","text":"..."},{"angle":"compliment","text":"..."},{"angle":"shared_connection","text":"..."},{"angle":"bold_claim","text":"..."},{"angle":"question","text":"..."}]
+- No markdown, no extra keys, no extra text`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  if (!Array.isArray(parsed)) throw new Error('Unexpected response shape')
+  // Validate and normalise — ensure one item per angle in the defined order
+  return ICEBREAKER_ANGLES.map((angle) => {
+    const found = parsed.find((item) => item?.angle === angle)
+    return { angle, text: typeof found?.text === 'string' ? found.text.trim() : '' }
+  }).filter((item) => item.text.length > 0)
+}
+
 // ─── Drip Sequence ──────────────────────────────────────────────────────────
 
 const DRIP_SEQUENCE_SLOTS = [
@@ -1269,6 +1345,12 @@ function App() {
   const [dripCardSubjects, setDripCardSubjects] = useState(() => DRIP_SEQUENCE_SLOTS.map(() => ''))
   const [dripCopiedIndex, setDripCopiedIndex] = useState(null)
 
+  const [icebreakers, setIcebreakers] = useState(null)
+  const [icebreakerLoading, setIcebreakerLoading] = useState(false)
+  const [icebreakerError, setIcebreakerError] = useState(null)
+  const [icebreakerActiveIndex, setIcebreakerActiveIndex] = useState(null)
+  const [icebreakerBodySnapshot, setIcebreakerBodySnapshot] = useState(null)
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -1374,6 +1456,21 @@ function App() {
     })
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!emails) return
+    const body = emails[0]?.body ?? ''
+    if (!body.trim()) return
+    setIcebreakers(null)
+    setIcebreakerError(null)
+    setIcebreakerLoading(true)
+    setIcebreakerActiveIndex(null)
+    setIcebreakerBodySnapshot(null)
+    generateIcebreakers(targetAndRole, industry, body, tone, voiceProfile)
+      .then((items) => setIcebreakers(items))
+      .catch((err) => setIcebreakerError(err.message || 'Failed to generate icebreakers'))
+      .finally(() => setIcebreakerLoading(false))
+  }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -1408,6 +1505,11 @@ function App() {
     setDripCardBodies(DRIP_SEQUENCE_SLOTS.map(() => ''))
     setDripCardSubjects(DRIP_SEQUENCE_SLOTS.map(() => ''))
     setDripCopiedIndex(null)
+    setIcebreakers(null)
+    setIcebreakerLoading(false)
+    setIcebreakerError(null)
+    setIcebreakerActiveIndex(null)
+    setIcebreakerBodySnapshot(null)
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1562,6 +1664,45 @@ function App() {
     const slug = targetAndRole.trim().slice(0, 30).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sequence'
     downloadCsv(csv, `coldmail-sequence-${slug}.csv`)
   }, [dripEmails, dripCardSubjects, dripCardBodies, targetAndRole])
+
+  const handleInjectIcebreaker = useCallback((icebreaker, index) => {
+    // Capture snapshot of original body before first injection
+    const snapshot = icebreakerActiveIndex === null
+      ? (emailCardBodies[0] ?? '')
+      : (icebreakerBodySnapshot ?? emailCardBodies[0] ?? '')
+    if (icebreakerActiveIndex === null) {
+      setIcebreakerBodySnapshot(emailCardBodies[0] ?? '')
+    }
+    // Replace the first paragraph (text before the first blank line) with the icebreaker
+    const parts = snapshot.split('\n\n')
+    parts[0] = icebreaker.text
+    const newBody = parts.join('\n\n')
+    setEmailCardBodies((prev) => { const next = [...prev]; next[0] = newBody; return next })
+    setIcebreakerActiveIndex(index)
+  }, [emailCardBodies, icebreakerActiveIndex, icebreakerBodySnapshot])
+
+  const handleRemoveIcebreaker = useCallback(() => {
+    if (icebreakerBodySnapshot !== null) {
+      setEmailCardBodies((prev) => { const next = [...prev]; next[0] = icebreakerBodySnapshot; return next })
+    }
+    setIcebreakerActiveIndex(null)
+    setIcebreakerBodySnapshot(null)
+  }, [icebreakerBodySnapshot])
+
+  const handleRegenerateIcebreakers = useCallback(async () => {
+    const body = emailCardBodies[0] ?? emails?.[0]?.body ?? ''
+    if (!body.trim()) return
+    setIcebreakerLoading(true)
+    setIcebreakerError(null)
+    try {
+      const items = await generateIcebreakers(targetAndRole, industry, body, tone, voiceProfile)
+      setIcebreakers(items)
+    } catch (err) {
+      setIcebreakerError(err.message || 'Failed to generate icebreakers')
+    } finally {
+      setIcebreakerLoading(false)
+    }
+  }, [emailCardBodies, emails, targetAndRole, industry, tone, voiceProfile])
 
   const handleRegenerate = () => {
     setEmails(null)
@@ -2471,6 +2612,95 @@ function App() {
           {/* Standard mode — 3-email grid + actions + variants */}
           {sequenceMode === 'standard' && (
           <>
+
+          {/* Icebreakers section */}
+          {showGeneratedResults && (
+            <div className="mb-7 rounded-xl border border-slate-700/60 bg-slate-800/50 p-4 sm:p-5 animate-fade-in">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Icebreakers</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Click one to replace Email 1's opening line</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRegenerateIcebreakers}
+                  disabled={icebreakerLoading}
+                  className="shrink-0 flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-700/60 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {icebreakerLoading ? (
+                    <>
+                      <svg className="h-3 w-3 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Generating…
+                    </>
+                  ) : (
+                    <>
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5" aria-hidden="true">
+                        <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
+                      </svg>
+                      Regenerate
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {icebreakerError && (
+                <p className="text-xs text-red-400 mb-3" role="alert">{icebreakerError}</p>
+              )}
+
+              {icebreakerLoading && !icebreakers && (
+                <p className="text-xs text-slate-500 italic animate-pulse">Writing 5 opening angles…</p>
+              )}
+
+              {icebreakers && icebreakers.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  {icebreakers.map((ice, i) => {
+                    const isActive = icebreakerActiveIndex === i
+                    return (
+                      <button
+                        key={`${ice.angle}-${i}`}
+                        type="button"
+                        onClick={() => handleInjectIcebreaker(ice, i)}
+                        className={`text-left rounded-xl border p-3 transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-sky-500 ${
+                          isActive
+                            ? 'border-sky-500/70 bg-sky-500/10 ring-1 ring-sky-500/30'
+                            : 'border-slate-600/70 bg-slate-700/40 hover:border-slate-500 hover:bg-slate-700/70'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className={`text-[10px] font-bold uppercase tracking-wide ${isActive ? 'text-sky-400' : 'text-slate-500'}`}>
+                            {ICEBREAKER_ANGLE_LABELS[ice.angle]}
+                          </span>
+                          {isActive && (
+                            <span className="rounded-full bg-sky-500/20 border border-sky-500/40 px-1.5 py-0.5 text-[9px] font-semibold text-sky-300 leading-none">active</span>
+                          )}
+                        </div>
+                        <p className={`text-xs leading-snug line-clamp-3 ${isActive ? 'text-sky-100' : 'text-slate-300'}`}>
+                          {ice.text}
+                        </p>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {icebreakerActiveIndex !== null && (
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-[11px] text-sky-400/80">Icebreaker applied to Email 1</span>
+                  <button
+                    type="button"
+                    onClick={handleRemoveIcebreaker}
+                    className="text-[11px] font-medium text-slate-400 hover:text-red-400 transition-colors focus:outline-none focus:ring-1 focus:ring-red-400/50 rounded px-1"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div
             key={showGeneratedResults ? 'generated' : 'placeholder'}
             className={`grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6 ${showGeneratedResults ? 'animate-fade-in' : ''}`}
@@ -2544,6 +2774,29 @@ function App() {
                     </button>
                   )}
                 </div>
+                {/* Icebreaker active indicator — Email 1 only */}
+                {index === 0 && icebreakerActiveIndex !== null && icebreakers?.[icebreakerActiveIndex] && (
+                  <div className="mb-2 rounded-lg border border-sky-500/40 bg-sky-500/8 px-3 py-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-sky-400">
+                          {ICEBREAKER_ANGLE_LABELS[icebreakers[icebreakerActiveIndex].angle]} opener active
+                        </span>
+                        <p className="mt-0.5 text-[11px] text-sky-200/80 leading-snug italic line-clamp-2">
+                          "{icebreakers[icebreakerActiveIndex].text}"
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRemoveIcebreaker}
+                        className="shrink-0 text-[10px] font-medium text-slate-500 hover:text-red-400 transition-colors focus:outline-none rounded px-1 py-0.5"
+                        aria-label="Remove icebreaker"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="relative group/body mb-2 flex-1 min-h-[8rem] flex flex-col">
                   <p
                     className="pointer-events-none absolute right-2 top-2 z-[1] text-[11px] text-slate-500 opacity-0 transition-opacity duration-200 group-hover/body:opacity-100 group-focus-within/body:opacity-0"
@@ -2563,7 +2816,11 @@ function App() {
                     }}
                     aria-label={`${email.title} body`}
                     rows={8}
-                    className="w-full flex-1 min-h-[8rem] rounded-lg border border-transparent bg-transparent text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 hover:bg-slate-900/25 focus:outline-none focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-2 focus:ring-sky-400/35"
+                    className={`w-full flex-1 min-h-[8rem] rounded-lg border text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 focus:outline-none focus:ring-2 ${
+                      index === 0 && icebreakerActiveIndex !== null
+                        ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/8 focus:border-sky-400/80 focus:bg-sky-500/10 focus:ring-sky-400/35'
+                        : 'border-transparent bg-transparent hover:bg-slate-900/25 focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-sky-400/35'
+                    }`}
                   />
                 </div>
                 {/* Per-card length slider */}
