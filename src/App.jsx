@@ -226,11 +226,11 @@ function formatSingleEmailForClipboard(email) {
 }
 
 function buildCopyAllEmailsText(emails) {
-  return COPY_ALL_SECTION_HEADERS.map((header, i) => {
-    const email = emails[i]
-    const block = email ? formatSingleEmailForClipboard(email) : ''
-    return `${header}:\n${block}`
-  }).join('\n\n')
+  return emails.map((email, i) => {
+    const subject = email?.subject ? `Subject: ${email.subject}\n` : ''
+    const body = email?.body ?? ''
+    return `Email ${i + 1}:\n${subject}${body}`
+  }).join('\n---\n')
 }
 
 function countWords(text) {
@@ -1580,6 +1580,7 @@ function App() {
           </div>
 
           <div className="mt-8 flex flex-col sm:flex-row flex-wrap justify-center gap-3">
+            {showGeneratedResults && (
             <button
               type="button"
               onClick={handleCopyAll}
@@ -1587,6 +1588,7 @@ function App() {
             >
               Copy All Emails
             </button>
+            )}
             {showGeneratedResults && (
               <button
                 type="button"
@@ -1821,7 +1823,7 @@ function App() {
           role="status"
           aria-live="polite"
         >
-          Copied!
+          All 3 emails copied
         </div>
       )}
 
