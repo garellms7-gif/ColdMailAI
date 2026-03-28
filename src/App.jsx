@@ -14,6 +14,36 @@ const CHAR_LIMIT_NAME_OFFER = 300
 const CHAR_LIMIT_TARGET_ROLE = 120
 const CHAR_LIMIT_GOAL = 200
 
+const VOICE_PROFILE_KEY = 'coldmailai_voice_profile'
+
+function getStoredVoiceProfile() {
+  try {
+    const raw = localStorage.getItem(VOICE_PROFILE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed.tone === 'string') return parsed
+    return null
+  } catch {
+    return null
+  }
+}
+
+function setStoredVoiceProfile(profile) {
+  try {
+    localStorage.setItem(VOICE_PROFILE_KEY, JSON.stringify(profile))
+  } catch {
+    // ignore
+  }
+}
+
+function clearStoredVoiceProfile() {
+  try {
+    localStorage.removeItem(VOICE_PROFILE_KEY)
+  } catch {
+    // ignore
+  }
+}
+
 const LOADING_MESSAGES = [
   'Analyzing your target...',
   'Crafting your hook...',
@@ -398,8 +428,66 @@ function getTonePromptLine(toneLabel) {
   return (found ?? TONE_OPTIONS[1]).promptLine
 }
 
-function buildSystemPromptWithTone(toneLabel) {
-  return `${SYSTEM_PROMPT}\n\n${getTonePromptLine(toneLabel)}`
+function buildVoiceProfileBlock(profile) {
+  return `Tone: ${profile.tone}
+Vocabulary level: ${profile.vocabularyLevel}
+Sentence style: ${profile.sentenceLength}
+Personality markers: ${profile.personalityMarkers}`
+}
+
+function buildSystemPromptWithTone(toneLabel, voiceProfile = null) {
+  let prompt = `${SYSTEM_PROMPT}\n\n${getTonePromptLine(toneLabel)}`
+  if (voiceProfile) {
+    prompt += `\n\nVOICE CALIBRATION — The user has provided samples of their actual writing. Match their natural voice as closely as possible — this overrides generic AI phrasing:\n${buildVoiceProfileBlock(voiceProfile)}`
+  }
+  return prompt
+}
+
+async function analyzeVoiceProfile(emailSamples) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 400,
+      system: `You are a writing style analyst. Analyze the provided email samples and extract a concise voice profile. Return ONLY a valid JSON object with exactly these string keys (no markdown, no extra keys):
+- "tone": overall tone (e.g., "Direct and confident", "Warm but professional")
+- "vocabularyLevel": vocabulary complexity (e.g., "Conversational — short words, avoids jargon")
+- "sentenceLength": sentence length pattern (e.g., "Short punchy sentences, rarely over 15 words")
+- "personalityMarkers": 2-3 distinctive writing habits separated by semicolons (e.g., "Starts with questions; uses em-dashes; skips formal openers")
+- "summary": one-sentence description of the overall voice`,
+      messages: [
+        {
+          role: 'user',
+          content: `Analyze these email samples and return a voice profile JSON:\n\n${emailSamples}`,
+        },
+      ],
+    }),
+  })
+
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') {
+    throw new Error('Invalid response format from API')
+  }
+  return parseEmailJson(content[0].text)
 }
 
 /** Parses "Your Name & What You Offer" into personal name and product/service. Format: "Name, What you offer" (first comma separates them). */
@@ -443,7 +531,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '') {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null) {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -456,7 +544,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
     body: JSON.stringify({
       model: 'claude-opus-4-5',
       max_tokens: 1500,
-      system: buildSystemPromptWithTone(toneLabel),
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
       messages: [
         { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName) },
       ],
@@ -552,9 +640,9 @@ function parseShortVariantsFromResponse(parsed) {
   }))
 }
 
-async function generateShortEmailVariants(nameAndOffer, targetAndRole, goal, toneLabel, industry) {
+async function generateShortEmailVariants(nameAndOffer, targetAndRole, goal, toneLabel, industry, voiceProfile = null) {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
-  const system = `${buildSystemPromptWithTone(toneLabel)}\n\n${SHORT_VARIANT_SYSTEM_APPEND}`
+  const system = `${buildSystemPromptWithTone(toneLabel, voiceProfile)}\n\n${SHORT_VARIANT_SYSTEM_APPEND}`
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -755,6 +843,12 @@ function App() {
   const [prospectFirstName, setProspectFirstName] = useState('')
   const [email1RawForPreview, setEmail1RawForPreview] = useState(null)
 
+  const [voiceProfile, setVoiceProfile] = useState(getStoredVoiceProfile)
+  const [voicePanelOpen, setVoicePanelOpen] = useState(false)
+  const [voiceSampleText, setVoiceSampleText] = useState('')
+  const [voiceAnalyzing, setVoiceAnalyzing] = useState(false)
+  const [voiceAnalysisError, setVoiceAnalysisError] = useState(null)
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -892,7 +986,7 @@ function App() {
     setVariantCopiedIndex(null)
     const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName)
+      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile)
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -974,7 +1068,7 @@ function App() {
     setVariantsLoading(true)
     setVariantCopiedIndex(null)
     try {
-      const list = await generateShortEmailVariants(nameAndOffer, targetAndRole, goal, tone, industry)
+      const list = await generateShortEmailVariants(nameAndOffer, targetAndRole, goal, tone, industry, voiceProfile)
       setShortVariants(list)
       setVariantsExpanded(true)
     } catch (err) {
@@ -1002,6 +1096,29 @@ function App() {
       shareLinkCopiedTimerRef.current = null
     }, 2000)
   }, [])
+
+  const handleAnalyzeVoice = async () => {
+    if (!voiceSampleText.trim()) return
+    setVoiceAnalyzing(true)
+    setVoiceAnalysisError(null)
+    try {
+      const profile = await analyzeVoiceProfile(voiceSampleText.trim())
+      setVoiceProfile(profile)
+      setStoredVoiceProfile(profile)
+      setVoiceSampleText('')
+    } catch (err) {
+      setVoiceAnalysisError(err.message || 'Could not analyze voice profile.')
+    } finally {
+      setVoiceAnalyzing(false)
+    }
+  }
+
+  const handleClearVoiceProfile = () => {
+    setVoiceProfile(null)
+    clearStoredVoiceProfile()
+    setVoiceSampleText('')
+    setVoiceAnalysisError(null)
+  }
 
   const undoEmailCardEdits = (index) => {
     setEmailCardBodies((prev) => {
@@ -1339,6 +1456,95 @@ function App() {
               />
             </div>
 
+            {/* Voice Calibration panel */}
+            <div className="rounded-xl border border-slate-700/40 bg-slate-700/20 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setVoicePanelOpen((v) => !v)}
+                className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-700/30 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
+                aria-expanded={voicePanelOpen}
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0 text-violet-400" aria-hidden="true">
+                    <path d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4z" />
+                    <path d="M5.5 9.643a.75.75 0 00-1.5 0V10c0 3.06 2.29 5.585 5.25 5.954V17.5h-1.5a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5H10.75v-1.546A6.001 6.001 0 0016 10v-.357a.75.75 0 00-1.5 0V10a4.5 4.5 0 01-9 0v-.357z" />
+                  </svg>
+                  <span className="text-sm font-medium text-slate-300">Calibrate Your Voice</span>
+                  {voiceProfile && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-violet-600/30 border border-violet-500/50 px-2 py-0.5 text-[11px] font-semibold text-violet-300 shrink-0">
+                      <span className="h-1.5 w-1.5 rounded-full bg-violet-400 shrink-0" aria-hidden="true" />
+                      Active
+                    </span>
+                  )}
+                </div>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`h-4 w-4 shrink-0 text-slate-500 transition-transform duration-200 ${voicePanelOpen ? 'rotate-180' : ''}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {voicePanelOpen && (
+                <div className="border-t border-slate-700/40 px-4 pb-4 pt-3 space-y-3">
+                  {voiceProfile ? (
+                    <>
+                      <div className="rounded-lg border border-violet-500/30 bg-violet-900/20 px-3.5 py-3 space-y-2">
+                        <p className="text-xs font-bold uppercase tracking-wide text-violet-300 mb-1">Your Voice Profile</p>
+                        {[
+                          ['Tone', voiceProfile.tone],
+                          ['Vocabulary', voiceProfile.vocabularyLevel],
+                          ['Sentences', voiceProfile.sentenceLength],
+                          ['Markers', voiceProfile.personalityMarkers],
+                        ].map(([label, value]) => (
+                          <div key={label} className="flex gap-2 text-xs">
+                            <span className="text-slate-500 shrink-0 w-20">{label}</span>
+                            <span className="text-slate-300 leading-snug">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {voiceProfile.summary && (
+                        <p className="text-xs text-slate-400 italic leading-snug">"{voiceProfile.summary}"</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleClearVoiceProfile}
+                        className="text-xs font-medium text-slate-500 hover:text-red-400 transition-colors focus:outline-none"
+                      >
+                        Clear voice profile
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-slate-400 leading-snug">
+                        Paste 2–3 cold emails you've personally written. Claude will extract your tone and style, then match it in every generation.
+                      </p>
+                      <textarea
+                        value={voiceSampleText}
+                        onChange={(e) => setVoiceSampleText(e.target.value)}
+                        placeholder="Paste your email samples here (2–3 examples)…"
+                        rows={6}
+                        disabled={voiceAnalyzing || loading}
+                        className="w-full rounded-lg bg-slate-700/60 border border-slate-600 text-white placeholder-slate-500 px-3.5 py-3 text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent transition-shadow resize-y min-h-[8rem] disabled:opacity-60"
+                      />
+                      {voiceAnalysisError && (
+                        <p className="text-xs text-red-400 leading-snug">{voiceAnalysisError}</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleAnalyzeVoice}
+                        disabled={!voiceSampleText.trim() || voiceAnalyzing || loading}
+                        className="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-violet-600"
+                      >
+                        {voiceAnalyzing ? 'Analyzing your voice…' : 'Analyze My Voice'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div>
               <label
                 htmlFor="target-role"
@@ -1546,6 +1752,15 @@ function App() {
               >
                 {industry}
               </span>
+              {voiceProfile && (
+                <span
+                  className="inline-flex items-center gap-1.5 self-center sm:self-auto shrink-0 rounded-full border border-violet-500/60 bg-violet-900/40 px-3 py-1.5 text-xs font-semibold text-violet-300"
+                  title={voiceProfile.summary || 'Your writing style is active'}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-violet-400 shrink-0 animate-pulse" aria-hidden="true" />
+                  My Voice is Active
+                </span>
+              )}
             </div>
             <button
               type="button"
