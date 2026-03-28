@@ -415,7 +415,10 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry) {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '') {
+  const personalizationBlock = prospectFirstName.trim()
+    ? `\nPERSONALIZATION (Email 1 only): Use the literal token {{firstName}} wherever you include the prospect's first name in Email 1's opening greeting and in the subject_short field. Do not write the actual name — write {{firstName}} exactly so it can be dynamically replaced. Example opening: "Hi {{firstName}}," — example subject: "Quick question for {{firstName}} at [Company]". Do NOT use {{firstName}} in Email 2 or Email 3.`
+    : ''
   return `Generate 3 cold emails for the following situation:
 
 SENDER'S PERSONAL NAME (use for opening, in-body reference, and sign-off — sign off with first name only): ${senderName}
@@ -424,7 +427,7 @@ SENDER'S PRODUCT OR SERVICE (describe/reference this separately in the body, not
 TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
-Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
+Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.${personalizationBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -440,7 +443,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry) {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '') {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -455,7 +458,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
       max_tokens: 1500,
       system: buildSystemPromptWithTone(toneLabel),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName) },
       ],
     }),
   })
@@ -595,6 +598,32 @@ async function generateShortEmailVariants(nameAndOffer, targetAndRole, goal, ton
   return parseShortVariantsFromResponse(parsed)
 }
 
+/** Replace {{firstName}} token with actual name, 'there', or remove it. */
+function substituteFirstNameToken(text, firstName, mode = 'name') {
+  if (!text) return text
+  if (mode === 'name') return text.replace(/\{\{firstName\}\}/g, firstName)
+  // 'standard': replace with 'there' in body-like text, strip from subject
+  if (mode === 'standard-body') return text.replace(/\{\{firstName\}\}/g, 'there')
+  if (mode === 'standard-subject') return text.replace(/\{\{firstName\}\}/g, '').replace(/\s{2,}/g, ' ').trim()
+  return text
+}
+
+/** Renders text replacing {{firstName}} with a highlighted <mark> element. */
+function renderPersonalizedText(text, firstName) {
+  const parts = text.split('{{firstName}}')
+  if (parts.length === 1) return text
+  return parts.map((part, i) => (
+    <span key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <mark className="bg-amber-200 text-amber-900 font-semibold not-italic rounded px-0.5">
+          {firstName}
+        </mark>
+      )}
+    </span>
+  ))
+}
+
 function StarBookmarkIcon({ filled }) {
   return (
     <svg
@@ -722,6 +751,10 @@ function App() {
   const [shareLinkCopied, setShareLinkCopied] = useState(false)
   const shareLinkCopiedTimerRef = useRef(null)
 
+  const [personalizeEnabled, setPersonalizeEnabled] = useState(false)
+  const [prospectFirstName, setProspectFirstName] = useState('')
+  const [email1RawForPreview, setEmail1RawForPreview] = useState(null)
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -770,13 +803,35 @@ function App() {
 
   useEffect(() => {
     const source = emails ?? PLACEHOLDER_EMAILS
-    const bodies = source.map((e) => e.body)
-    const subjects = source.map((e) => e.subject ?? '')
+    const shouldSubstitute = personalizeEnabled && prospectFirstName.trim() !== '' && emails !== null
+    const firstName = prospectFirstName.trim()
+
+    if (shouldSubstitute) {
+      // Save raw Email 1 (with {{firstName}} token) for the preview comparison
+      setEmail1RawForPreview({
+        body: source[0]?.body ?? '',
+        subject: source[0]?.subject ?? '',
+      })
+    } else {
+      setEmail1RawForPreview(null)
+    }
+
+    const bodies = source.map((e, i) => {
+      const body = e.body
+      if (shouldSubstitute && i === 0) return substituteFirstNameToken(body, firstName, 'name')
+      return body
+    })
+    const subjects = source.map((e, i) => {
+      const subj = e.subject ?? ''
+      if (shouldSubstitute && i === 0) return substituteFirstNameToken(subj, firstName, 'name')
+      return subj
+    })
+
     setEmailCardBodies(bodies)
     setEmailCardOriginalBodies(bodies)
     setEmailCardSubjects(subjects)
     setEmailCardOriginalSubjects(subjects)
-  }, [emails])
+  }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const clearFormAndResults = () => {
     setNameAndOffer('')
@@ -785,6 +840,7 @@ function App() {
     setIndustry('Other')
     setTone('Conversational')
     setEmails(null)
+    setEmail1RawForPreview(null)
     setError(null)
     setCopiedIndex(null)
     setCopiedSubjectIndex(null)
@@ -830,11 +886,13 @@ function App() {
     setError(null)
     setLoading(true)
     setEmails(null)
+    setEmail1RawForPreview(null)
     setShortVariants(null)
     setVariantsError(null)
     setVariantCopiedIndex(null)
+    const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry)
+      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName)
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -1418,6 +1476,48 @@ function App() {
             </div>
           </div>
 
+          <div className="mt-6 rounded-xl border border-slate-700/50 bg-slate-700/20 px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-200">Personalize with first name</p>
+                <p className="text-xs text-slate-500 mt-0.5">Injects the prospect's name into Email 1's opening and subject</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={personalizeEnabled}
+                onClick={() => setPersonalizeEnabled((v) => !v)}
+                disabled={loading}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  personalizeEnabled ? 'bg-blue-600' : 'bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg transition duration-200 ease-in-out ${
+                    personalizeEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+            {personalizeEnabled && (
+              <div className="mt-3">
+                <label htmlFor="prospect-first-name" className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Prospect's first name
+                </label>
+                <input
+                  type="text"
+                  id="prospect-first-name"
+                  value={prospectFirstName}
+                  onChange={(e) => setProspectFirstName(e.target.value)}
+                  placeholder="e.g. Sarah"
+                  maxLength={50}
+                  disabled={loading}
+                  className="w-full rounded-lg bg-slate-700/60 border border-slate-600 text-white placeholder-slate-500 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                />
+              </div>
+            )}
+          </div>
+
           <div className="mt-8 flex flex-col sm:flex-row gap-3 sm:items-stretch">
             <div className="flex flex-1 min-w-0 flex-col sm:flex-row gap-2 sm:items-center">
               <button
@@ -1592,6 +1692,53 @@ function App() {
               </div>
             ))}
           </div>
+
+          {/* Personalization preview — before/after comparison for Email 1 */}
+          {showGeneratedResults && email1RawForPreview && prospectFirstName.trim() && (
+            <div className="mt-10 animate-fade-in">
+              <div className="flex items-center gap-3 mb-4">
+                <h3 className="text-base font-semibold text-slate-200">Personalization Preview</h3>
+                <span className="rounded-full bg-amber-500/20 border border-amber-500/40 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
+                  Email 1
+                </span>
+              </div>
+              <p className="text-sm text-slate-400 mb-5 leading-snug">
+                See how Email 1 reads with and without the prospect's first name.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                {/* Standard card */}
+                <div className="rounded-xl border border-slate-700/60 bg-slate-800/60 p-5 flex flex-col">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400 mb-3">Standard</p>
+                  {email1RawForPreview.subject && (
+                    <div className="mb-3 rounded-lg border border-slate-600/60 bg-slate-700/40 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-0.5">Subject</p>
+                      <p className="text-xs font-medium text-slate-300">
+                        {substituteFirstNameToken(email1RawForPreview.subject, '', 'standard-subject') || email1RawForPreview.subject.replace(/\{\{firstName\}\}/g, '').trim()}
+                      </p>
+                    </div>
+                  )}
+                  <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-wrap flex-1">
+                    {substituteFirstNameToken(email1RawForPreview.body, '', 'standard-body')}
+                  </p>
+                </div>
+                {/* Personalized card */}
+                <div className="rounded-xl border border-amber-500/40 bg-slate-800/60 p-5 flex flex-col ring-1 ring-amber-500/20">
+                  <p className="text-xs font-bold uppercase tracking-wide text-amber-400 mb-3">Personalized</p>
+                  {email1RawForPreview.subject && (
+                    <div className="mb-3 rounded-lg border border-amber-400/50 bg-amber-50 px-3 py-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-0.5">Subject</p>
+                      <p className="text-xs font-medium text-slate-900">
+                        {renderPersonalizedText(email1RawForPreview.subject, prospectFirstName.trim())}
+                      </p>
+                    </div>
+                  )}
+                  <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap flex-1">
+                    {renderPersonalizedText(email1RawForPreview.body, prospectFirstName.trim())}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="mt-8 flex flex-col sm:flex-row flex-wrap justify-center gap-3">
             <button
