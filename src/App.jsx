@@ -124,15 +124,38 @@ function formatSavedAt(ts) {
 }
 
 const INDUSTRY_OPTIONS = [
-  'SaaS/Tech',
-  'Agency',
-  'eCommerce',
-  'Real Estate',
-  'Finance',
-  'Healthcare',
-  'Recruitment',
-  'Coaching',
-  'Other',
+  {
+    label: 'SaaS',
+    painPoints: 'long sales cycles, trial-to-paid conversion, feature adoption, high churn, CAC vs LTV pressure, competitive crowding',
+  },
+  {
+    label: 'Agency',
+    painPoints: 'feast-or-famine pipeline, scope creep, client retention, commoditization, pricing pressure, new business development',
+  },
+  {
+    label: 'E-commerce',
+    painPoints: 'rising ad costs, cart abandonment, low repeat purchase rate, thin margins, returns management, attribution complexity',
+  },
+  {
+    label: 'Real Estate',
+    painPoints: 'slow deal velocity, lead quality, market inventory shifts, commission compression, relationship-driven decisions',
+  },
+  {
+    label: 'Recruiting',
+    painPoints: 'time-to-fill, passive candidate engagement, offer decline rates, diversity hiring goals, high-volume screening, ATS limitations',
+  },
+  {
+    label: 'Consulting',
+    painPoints: 'proving ROI, project scope creep, stakeholder alignment, long procurement cycles, competing internal priorities',
+  },
+  {
+    label: 'Finance',
+    painPoints: 'compliance overhead, building client trust, manual reporting, regulatory changes, portfolio transparency, fee justification',
+  },
+  {
+    label: 'Healthcare',
+    painPoints: 'admin burden, billing complexity, patient throughput, regulatory compliance, staff burnout, EHR inefficiencies',
+  },
 ]
 
 const EXAMPLE_SCENARIOS = [
@@ -413,6 +436,14 @@ function parseNameAndOffer(input) {
   }
 }
 
+function buildIndustryBlock(industry) {
+  if (!industry) return ''
+  const found = INDUSTRY_OPTIONS.find((o) => o.label === industry)
+  const painPoints = found?.painPoints ?? ''
+  return `\nINDUSTRY: ${industry}${painPoints ? `\nKEY PAIN POINTS IN THIS SECTOR: ${painPoints}` : ''}
+Write with language, pain points, benchmarks, and references specific to the ${industry} industry so the emails feel credible and relevant to this reader. Stay accurate — do not invent fake stats.`
+}
+
 function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry) {
   return `Generate 3 cold emails for the following situation:
 
@@ -420,9 +451,7 @@ SENDER'S PERSONAL NAME (use for opening, in-body reference, and sign-off — sig
 SENDER'S PRODUCT OR SERVICE (describe/reference this separately in the body, not as a business name): ${senderOffer}
 
 TARGET: ${targetAndRole}
-GOAL: ${goal}
-INDUSTRY CONTEXT: ${industry}
-Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
+GOAL: ${goal}${buildIndustryBlock(industry)}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -523,8 +552,7 @@ CONTEXT
 SENDER PERSONAL NAME (sign off with first name only): ${senderName}
 SENDER PRODUCT OR SERVICE: ${senderOffer}
 TARGET: ${targetAndRole}
-GOAL: ${goal}
-INDUSTRY CONTEXT: ${industry}
+GOAL: ${goal}${buildIndustryBlock(industry)}
 
 VARIANT 1 — QUESTION OPENER: Lead with a thoughtful, specific question; no rhetorical filler.
 VARIANT 2 — STAT OR INSIGHT: Lead with a credible stat, trend, or insight; then bridge to the ask.
@@ -656,7 +684,7 @@ function App() {
   const [nameAndOffer, setNameAndOffer] = useState('')
   const [targetAndRole, setTargetAndRole] = useState('')
   const [goal, setGoal] = useState('Book a Call')
-  const [industry, setIndustry] = useState('Other')
+  const [industry, setIndustry] = useState('')
   const [tone, setTone] = useState('Conversational')
   const [emails, setEmails] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -782,7 +810,7 @@ function App() {
     setNameAndOffer('')
     setTargetAndRole('')
     setGoal('Book a Call')
-    setIndustry('Other')
+    setIndustry('')
     setTone('Conversational')
     setEmails(null)
     setError(null)
@@ -1351,22 +1379,47 @@ function App() {
             </div>
 
             <div>
-              <label htmlFor="industry" className="block text-sm font-medium text-slate-300 mb-2">
-                Industry
-              </label>
-              <select
-                id="industry"
-                value={industry}
-                onChange={(e) => setIndustry(e.target.value)}
-                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer transition-shadow"
-                disabled={loading}
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-slate-300" id="industry-label">
+                  Industry <span className="text-slate-500 font-normal">(optional)</span>
+                </p>
+                {industry && (
+                  <button
+                    type="button"
+                    onClick={() => setIndustry('')}
+                    disabled={loading}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors focus:outline-none disabled:opacity-50"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div
+                className="grid grid-cols-2 sm:grid-cols-4 gap-2"
+                role="radiogroup"
+                aria-labelledby="industry-label"
               >
-                {INDUSTRY_OPTIONS.map((opt) => (
-                  <option key={opt} value={opt} className="bg-slate-800 text-white">
-                    {opt}
-                  </option>
-                ))}
-              </select>
+                {INDUSTRY_OPTIONS.map(({ label }) => {
+                  const selected = industry === label
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      disabled={loading}
+                      onClick={() => setIndustry(selected ? '' : label)}
+                      className={`rounded-xl border px-3 py-2.5 text-sm font-medium text-left transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed ${
+                        selected
+                          ? 'border-blue-500 bg-blue-600/20 text-blue-300'
+                          : 'border-slate-600 bg-slate-700/40 text-slate-400 hover:border-slate-500 hover:bg-slate-700/70 hover:text-slate-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
 
