@@ -762,6 +762,139 @@ Rules:
   }).filter((item) => item.text.length > 0)
 }
 
+// ─── Reply Templates ─────────────────────────────────────────────────────────
+
+const REPLY_TEMPLATE_SCENARIOS = [
+  { key: 'interested',    label: 'Interested',      description: 'Prospect wants to learn more or book a call' },
+  { key: 'needs_info',   label: 'Needs More Info',  description: 'Prospect wants details before committing'    },
+  { key: 'objection',    label: 'Objection',        description: 'Prospect pushes back on price, timing, or fit' },
+  { key: 'not_now',      label: 'Not Now',          description: 'Prospect is open but says bad timing'         },
+]
+
+async function generateAllReplyTemplates(nameAndOffer, targetAndRole, goal, industry, toneLabel, emailBody, voiceProfile = null) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const firstName = senderName.split(/\s+/)[0] || senderName
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 900,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Generate 4 short reply templates for when a prospect responds to this cold email.
+
+CONTEXT
+Sender name (sign off with first name only): ${senderName}
+Product/service: ${senderOffer}
+Target: ${targetAndRole}
+Goal: ${goal}
+Industry: ${industry}
+Original cold email body:
+---
+${emailBody.slice(0, 600)}
+---
+
+Write one reply template for each of these scenarios:
+1. interested — Prospect is interested and wants to learn more or book a call. Confirm enthusiasm, suggest a specific next step (time/link), and keep momentum.
+2. needs_info — Prospect wants more details before committing. Provide 1-2 concrete specifics, then re-ask for the meeting with a lower-friction ask.
+3. objection — Prospect pushes back on price, timing, or fit. Validate the concern briefly, reframe the value, and offer a smaller commitment.
+4. not_now — Prospect is open but says it's bad timing. Acknowledge without pressure, plant a seed for later, and give them control over the follow-up timing.
+
+Rules:
+- 3–4 sentences maximum per template
+- Match the tone and industry context of the original email
+- End each with a clear, specific next step
+- Write as if ${firstName} is replying — first person, sign off with only "${firstName}"
+- Return ONLY a valid JSON object with exactly these string keys (no markdown):
+  "interested", "needs_info", "objection", "not_now"`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  return REPLY_TEMPLATE_SCENARIOS.map((s) => ({
+    ...s,
+    text: typeof parsed[s.key] === 'string' ? parsed[s.key].trim() : '',
+  }))
+}
+
+async function regenerateSingleReplyTemplate(scenario, nameAndOffer, targetAndRole, goal, industry, toneLabel, emailBody, voiceProfile = null) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const firstName = senderName.split(/\s+/)[0] || senderName
+  const scenarioInstructions = {
+    interested:  'Prospect is interested and wants to learn more or book a call. Confirm enthusiasm, suggest a specific next step (time/link), and keep momentum.',
+    needs_info:  'Prospect wants more details before committing. Provide 1-2 concrete specifics, then re-ask for the meeting with a lower-friction ask.',
+    objection:   'Prospect pushes back on price, timing, or fit. Validate the concern briefly, reframe the value, and offer a smaller commitment.',
+    not_now:     'Prospect is open but says it\'s bad timing. Acknowledge without pressure, plant a seed for later, and give them control over the follow-up timing.',
+  }
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 250,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Write a NEW reply template for the scenario: ${scenario.label}
+${scenarioInstructions[scenario.key]}
+
+Context: Sender is ${senderName} offering ${senderOffer} to ${targetAndRole} in ${industry}. Goal: ${goal}.
+Original email:
+---
+${emailBody.slice(0, 400)}
+---
+
+Rules: 3–4 sentences max, end with a clear next step, sign off with only "${firstName}". Return ONLY the plain text reply — no subject line, no JSON, no markdown.`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
 // ─── Drip Sequence ──────────────────────────────────────────────────────────
 
 const DRIP_SEQUENCE_SLOTS = [
@@ -1351,6 +1484,14 @@ function App() {
   const [icebreakerActiveIndex, setIcebreakerActiveIndex] = useState(null)
   const [icebreakerBodySnapshot, setIcebreakerBodySnapshot] = useState(null)
 
+  const [replyTemplates, setReplyTemplates] = useState(null)          // null | array of {key,label,description,text}
+  const [replyTemplatesLoading, setReplyTemplatesLoading] = useState(false)
+  const [replyTemplatesError, setReplyTemplatesError] = useState(null)
+  const [replyTemplatesSectionOpen, setReplyTemplatesSectionOpen] = useState(false)
+  const [replyTemplateCopied, setReplyTemplateCopied] = useState(null) // key of copied template
+  const [replyTemplateRegenLoading, setReplyTemplateRegenLoading] = useState({}) // { [key]: bool }
+  const [replyTemplateRegenError, setReplyTemplateRegenError] = useState({})    // { [key]: string|null }
+
   const inboxPreviewData = useMemo(() => {
     if (inboxPreviewIndex === null) return null
     const email = displayEmails[inboxPreviewIndex]
@@ -1471,6 +1612,23 @@ function App() {
       .finally(() => setIcebreakerLoading(false))
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (!emails) return
+    const body = emails[0]?.body ?? ''
+    if (!body.trim()) return
+    setReplyTemplates(null)
+    setReplyTemplatesError(null)
+    setReplyTemplatesLoading(true)
+    setReplyTemplatesSectionOpen(false)
+    setReplyTemplateCopied(null)
+    setReplyTemplateRegenLoading({})
+    setReplyTemplateRegenError({})
+    generateAllReplyTemplates(nameAndOffer, targetAndRole, goal, industry, tone, body, voiceProfile)
+      .then((items) => setReplyTemplates(items))
+      .catch((err) => setReplyTemplatesError(err.message || 'Failed to generate reply templates'))
+      .finally(() => setReplyTemplatesLoading(false))
+  }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -1510,6 +1668,13 @@ function App() {
     setIcebreakerError(null)
     setIcebreakerActiveIndex(null)
     setIcebreakerBodySnapshot(null)
+    setReplyTemplates(null)
+    setReplyTemplatesLoading(false)
+    setReplyTemplatesError(null)
+    setReplyTemplatesSectionOpen(false)
+    setReplyTemplateCopied(null)
+    setReplyTemplateRegenLoading({})
+    setReplyTemplateRegenError({})
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -1703,6 +1868,22 @@ function App() {
       setIcebreakerLoading(false)
     }
   }, [emailCardBodies, emails, targetAndRole, industry, tone, voiceProfile])
+
+  const handleRegenerateReplyTemplate = useCallback(async (scenario) => {
+    const body = emailCardBodies[0] ?? emails?.[0]?.body ?? ''
+    setReplyTemplateRegenLoading((prev) => ({ ...prev, [scenario.key]: true }))
+    setReplyTemplateRegenError((prev) => ({ ...prev, [scenario.key]: null }))
+    try {
+      const text = await regenerateSingleReplyTemplate(scenario, nameAndOffer, targetAndRole, goal, industry, tone, body, voiceProfile)
+      setReplyTemplates((prev) =>
+        prev ? prev.map((t) => (t.key === scenario.key ? { ...t, text } : t)) : prev
+      )
+    } catch (err) {
+      setReplyTemplateRegenError((prev) => ({ ...prev, [scenario.key]: err.message || 'Failed' }))
+    } finally {
+      setReplyTemplateRegenLoading((prev) => ({ ...prev, [scenario.key]: false }))
+    }
+  }, [emailCardBodies, emails, nameAndOffer, targetAndRole, goal, industry, tone, voiceProfile])
 
   const handleRegenerate = () => {
     setEmails(null)
@@ -3126,6 +3307,128 @@ function App() {
                 )}
               </div>
             </details>
+          )}
+
+          {/* Prepare for Replies — collapsible section */}
+          {showGeneratedResults && (
+            <div className="mt-10 rounded-xl border border-slate-700/60 bg-slate-800/40 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setReplyTemplatesSectionOpen((o) => !o)}
+                className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-slate-800/60 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 select-none"
+                aria-expanded={replyTemplatesSectionOpen}
+              >
+                <div className="flex items-center gap-3">
+                  <span className="font-semibold text-slate-100">Prepare for Replies</span>
+                  {replyTemplatesLoading && (
+                    <svg className="h-3.5 w-3.5 animate-spin text-slate-400 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  {replyTemplates && !replyTemplatesLoading && (
+                    <span className="text-slate-500 text-sm font-normal tabular-nums shrink-0">
+                      {replyTemplates.length} templates
+                    </span>
+                  )}
+                  {replyTemplatesError && !replyTemplatesLoading && (
+                    <span className="text-xs text-red-400 shrink-0">Error</span>
+                  )}
+                </div>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className={`h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200 ${replyTemplatesSectionOpen ? 'rotate-180' : ''}`}
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+
+              {replyTemplatesSectionOpen && (
+                <div className="border-t border-slate-700/50 px-5 pb-5 pt-4">
+                  <p className="text-sm text-slate-400 leading-relaxed mb-5">
+                    Ready-to-send replies for the 4 most common responses — edit and copy as needed.
+                  </p>
+
+                  {replyTemplatesError && (
+                    <div className="mb-4 rounded-lg border border-red-700/40 bg-red-900/30 p-3 text-red-200 text-sm" role="alert">
+                      {replyTemplatesError}
+                    </div>
+                  )}
+
+                  {replyTemplatesLoading && (
+                    <p className="text-slate-400 text-sm py-4 text-center animate-pulse">Writing reply templates…</p>
+                  )}
+
+                  {replyTemplates && !replyTemplatesLoading && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {replyTemplates.map((template) => {
+                        const isRegenLoading = !!replyTemplateRegenLoading[template.key]
+                        const regenErr = replyTemplateRegenError[template.key]
+                        const isCopied = replyTemplateCopied === template.key
+                        return (
+                          <div
+                            key={template.key}
+                            className="rounded-xl border border-slate-700/50 bg-slate-800/80 p-4 flex flex-col gap-3 shadow-md shadow-black/10"
+                          >
+                            {/* Card header */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold uppercase tracking-wide text-violet-400">{template.label}</p>
+                                <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{template.description}</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRegenerateReplyTemplate(template)}
+                                disabled={isRegenLoading}
+                                title={`Regenerate ${template.label} reply`}
+                                aria-label={`Regenerate ${template.label} reply template`}
+                                className="shrink-0 rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-slate-700/50 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  viewBox="0 0 20 20"
+                                  fill="currentColor"
+                                  className={`h-3.5 w-3.5 ${isRegenLoading ? 'animate-spin' : ''}`}
+                                  aria-hidden="true"
+                                >
+                                  <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
+                                </svg>
+                              </button>
+                            </div>
+
+                            {regenErr && (
+                              <p className="text-[11px] text-red-400 leading-snug" role="alert">{regenErr}</p>
+                            )}
+
+                            {/* Template body */}
+                            <p className={`text-sm text-slate-300 leading-relaxed whitespace-pre-wrap flex-1 ${isRegenLoading ? 'opacity-40' : ''}`}>
+                              {template.text || (isRegenLoading ? 'Rewriting…' : '')}
+                            </p>
+
+                            {/* Copy button */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(template.text)
+                                setReplyTemplateCopied(template.key)
+                                window.setTimeout(() => setReplyTemplateCopied(null), 2000)
+                              }}
+                              disabled={!template.text || isRegenLoading}
+                              className="w-full py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {isCopied ? 'Copied!' : 'Copy'}
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           </>
