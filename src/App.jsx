@@ -1339,6 +1339,100 @@ function renderPersonalizedText(text, firstName) {
   ))
 }
 
+// ─── Email 1 A/B Variant Generator ──────────────────────────────────────────
+
+const EMAIL1_VARIANT_ANGLES = [
+  {
+    key: 'curiosity',
+    label: 'Curiosity',
+    angleLabel: 'Curiosity Gap',
+    description: 'Teases a result or insight without fully revealing it — makes them need to reply to get the answer.',
+    subjectKey: 'curiosity_subject',
+    bodyKey: 'curiosity_body',
+  },
+  {
+    key: 'stat',
+    label: 'Stat',
+    angleLabel: 'Specific Stat',
+    description: 'Opens with a relevant number or data point that creates instant credibility.',
+    subjectKey: 'stat_subject',
+    bodyKey: 'stat_body',
+  },
+  {
+    key: 'observation',
+    label: 'Observation',
+    angleLabel: 'Observation Opener',
+    description: 'Starts with a specific observation about their company, role, or industry that shows research.',
+    subjectKey: 'observation_subject',
+    bodyKey: 'observation_body',
+  },
+]
+
+async function generateEmail1Variants(nameAndOffer, targetAndRole, goal, toneLabel, industry, originalEmail1Body, voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const first = senderName.split(/\s+/)[0] || senderName
+  const userMessage = `Generate 3 alternative A/B versions of Email 1 — a concise first-touch cold email. Each version must use a completely different opening angle. Match approximately ${targetWordCount} words per email.
+
+CONTEXT
+SENDER PERSONAL NAME (sign off with first name only): ${senderName}
+SENDER PRODUCT OR SERVICE: ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+INDUSTRY CONTEXT: ${industry}
+
+ORIGINAL EMAIL 1 (for reference — do NOT recycle sentences or structure from it):
+${originalEmail1Body}
+
+VARIANT 1 — CURIOSITY GAP: Tease a specific result, pattern, or insight your offer delivers without fully revealing it — the reader must reply to get the full picture. Create genuine intrigue, not clickbait.
+
+VARIANT 2 — SPECIFIC STAT: Open with a concrete, relevant number or data point that makes the reader stop and think. The stat must feel earned and directly bridge to the offer — no fake statistics; use realistic ranges or well-known benchmarks if needed.
+
+VARIANT 3 — OBSERVATION OPENER: Open with a hyper-specific observation about their company, their role, or a recent industry development that shows real research. Make it feel like it was written only for them.
+
+Return ONLY a JSON object (all string values, no markdown) with exactly these keys:
+- curiosity_subject, curiosity_body
+- stat_subject, stat_body
+- observation_subject, observation_body
+
+Each body must sign off with only the sender's first name (e.g. "Best," then "${first}" on the next line).`
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 1400,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  })
+
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try { const d = JSON.parse(errBody); if (d.error?.message) message = d.error.message } catch { if (errBody) message += ` — ${errBody.slice(0, 200)}` }
+    throw new Error(message)
+  }
+
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  return EMAIL1_VARIANT_ANGLES.map((angle) => ({
+    key: angle.key,
+    label: angle.label,
+    angleLabel: angle.angleLabel,
+    description: angle.description,
+    subject: typeof parsed[angle.subjectKey] === 'string' ? parsed[angle.subjectKey] : '',
+    body: typeof parsed[angle.bodyKey] === 'string' ? parsed[angle.bodyKey] : '',
+  }))
+}
+
 // ─── Reply Score ────────────────────────────────────────────────────────────
 
 const SPAM_TRIGGER_WORDS = ['free', 'guaranteed', 'no risk', 'limited time', 'act now']
@@ -1523,6 +1617,11 @@ function App() {
   const [variantsError, setVariantsError] = useState(null)
   const [variantsExpanded, setVariantsExpanded] = useState(true)
   const [variantCopiedIndex, setVariantCopiedIndex] = useState(null)
+  // Email 1 A/B variant generator
+  const [email1Variants, setEmail1Variants] = useState(null)       // null | [{key,label,angleLabel,description,subject,body}]
+  const [email1VariantsLoading, setEmail1VariantsLoading] = useState(false)
+  const [email1VariantsError, setEmail1VariantsError] = useState(null)
+  const [email1ActiveVariantTab, setEmail1ActiveVariantTab] = useState(0) // 0=Original, 1=Curiosity, 2=Stat, 3=Observation
   const [inboxPreviewIndex, setInboxPreviewIndex] = useState(null)
   const [inboxPreviewCopied, setInboxPreviewCopied] = useState(false)
   const inboxPreviewCopyTimerRef = useRef(null)
@@ -1782,6 +1881,10 @@ function App() {
     setVariantsLoading(false)
     setVariantCopiedIndex(null)
     setVariantsExpanded(true)
+    setEmail1Variants(null)
+    setEmail1VariantsLoading(false)
+    setEmail1VariantsError(null)
+    setEmail1ActiveVariantTab(0)
     setPsLines({ 0: null, 2: null })
     setPsLoading({ 0: false, 2: false })
     setPsStyles({ 0: 'urgency', 2: 'social_proof' })
@@ -2059,6 +2162,30 @@ function App() {
     setCopiedSubjectIndex(null)
     setVariantCopiedIndex(index)
     window.setTimeout(() => setVariantCopiedIndex(null), 2000)
+  }, [])
+
+  const handleGenerateEmail1Variants = useCallback(async () => {
+    const originalBody = emailCardBodies[0] ?? emails?.[0]?.body ?? ''
+    if (!originalBody.trim()) return
+    setEmail1VariantsError(null)
+    setEmail1VariantsLoading(true)
+    setEmail1ActiveVariantTab(0)
+    try {
+      const variants = await generateEmail1Variants(nameAndOffer, targetAndRole, goal, tone, industry, originalBody, voiceProfile, targetLength)
+      setEmail1Variants(variants)
+      setEmail1ActiveVariantTab(1) // switch to first variant tab automatically
+    } catch (err) {
+      setEmail1VariantsError(err.message || 'Could not generate variants.')
+    } finally {
+      setEmail1VariantsLoading(false)
+    }
+  }, [emailCardBodies, emails, nameAndOffer, targetAndRole, goal, tone, industry, voiceProfile, targetLength])
+
+  const handleUseEmail1Variant = useCallback((variant) => {
+    setEmailCardSubjects((prev) => { const next = [...prev]; next[0] = variant.subject; return next })
+    setEmailCardBodies((prev) => { const next = [...prev]; next[0] = variant.body; return next })
+    setEmail1Variants(null)
+    setEmail1ActiveVariantTab(0)
   }, [])
 
   const handleShareLinkCopy = useCallback(() => {
@@ -3449,6 +3576,16 @@ function App() {
                 >
                   Preview in Inbox
                 </button>
+                {index === 0 && showGeneratedResults && appMode !== 'reengage' && (
+                  <button
+                    type="button"
+                    onClick={handleGenerateEmail1Variants}
+                    disabled={email1VariantsLoading || loading}
+                    className="w-full mb-2 py-2.5 rounded-xl border border-violet-500/50 bg-violet-900/20 text-violet-300 text-sm font-medium hover:bg-violet-900/40 hover:text-violet-200 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99]"
+                  >
+                    {email1VariantsLoading ? 'Generating variants…' : email1Variants ? 'Regenerate Variants' : 'Generate Variants'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleCopy({ ...email, subject: emailCardSubjects[index] ?? email.subject, body: emailCardBodies[index] ?? email.body }, index)}
@@ -3459,6 +3596,123 @@ function App() {
               </div>
             ))}
           </div>
+
+          {/* Email 1 A/B Variant panel */}
+          {showGeneratedResults && (email1VariantsLoading || email1VariantsError || email1Variants) && appMode !== 'reengage' && (
+            <div className="mt-6 rounded-xl border border-violet-500/30 bg-slate-800/50 overflow-hidden animate-fade-in">
+              {/* Header */}
+              <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-slate-700/50">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-200">Email 1 — A/B Variants</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Three alternative angles for Email 1. Use the best one to replace it.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setEmail1Variants(null); setEmail1VariantsError(null); setEmail1ActiveVariantTab(0) }}
+                  className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-700/60 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  aria-label="Close variant panel"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {email1VariantsLoading && (
+                <p className="text-sm text-slate-400 italic animate-pulse px-5 py-8 text-center">Writing 3 distinct opening angles…</p>
+              )}
+              {email1VariantsError && (
+                <div className="m-5 p-3 rounded-lg bg-red-900/35 border border-red-700/40 text-red-200 text-sm" role="alert">
+                  {email1VariantsError}
+                </div>
+              )}
+              {email1Variants && !email1VariantsLoading && (() => {
+                const ALL_TABS = [
+                  { key: 'original', label: 'Original', subject: emailCardSubjects[0] ?? emails?.[0]?.subject ?? '', body: emailCardBodies[0] ?? emails?.[0]?.body ?? '', angleLabel: 'Original Email 1', description: 'The original generated version.' },
+                  ...email1Variants,
+                ]
+                const activeTab = ALL_TABS[email1ActiveVariantTab] ?? ALL_TABS[0]
+                const tabScore = computeReplyScore(activeTab.body, '')
+                return (
+                  <div>
+                    {/* Tab bar */}
+                    <div className="flex overflow-x-auto border-b border-slate-700/50 px-4 gap-0.5 pt-3 pb-0">
+                      {ALL_TABS.map((tab, ti) => (
+                        <button
+                          key={tab.key}
+                          type="button"
+                          onClick={() => setEmail1ActiveVariantTab(ti)}
+                          className={`shrink-0 px-3.5 py-2 text-xs font-semibold rounded-t-lg border-b-2 transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-inset ${
+                            email1ActiveVariantTab === ti
+                              ? 'border-violet-400 text-violet-300 bg-violet-900/20'
+                              : 'border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-600'
+                          }`}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Tab content */}
+                    <div className="p-5">
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-violet-400 mb-0.5">{activeTab.angleLabel}</p>
+                          <p className="text-xs text-slate-500 leading-snug">{activeTab.description}</p>
+                        </div>
+                        <span className="shrink-0 tabular-nums text-xs text-slate-500 mt-0.5">
+                          {countWords(activeTab.body)} words
+                        </span>
+                      </div>
+
+                      {/* Subject */}
+                      {activeTab.subject?.trim() ? (
+                        <div className="mb-3 rounded-lg border border-amber-400/50 bg-amber-50 px-3 py-2">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-0.5">Subject</p>
+                          <p className="text-xs font-medium text-slate-900">{activeTab.subject}</p>
+                        </div>
+                      ) : null}
+
+                      {/* Body */}
+                      <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap mb-4">{activeTab.body}</p>
+
+                      {/* Reply Score */}
+                      <div className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 mb-4 ${scoreBadgeClasses(tabScore.score)}`}>
+                        <span className="text-xs font-semibold tracking-wide">Reply Score</span>
+                        <span className="text-sm font-bold tabular-nums">
+                          {tabScore.score}<span className="text-[10px] font-normal opacity-60">/100</span>
+                        </span>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex gap-2">
+                        {email1ActiveVariantTab > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleUseEmail1Variant(activeTab)}
+                            className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 active:scale-[0.98]"
+                          >
+                            Use This Variant
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(
+                              formatSingleEmailForClipboard({ title: activeTab.angleLabel, subject: activeTab.subject, body: activeTab.body })
+                            )
+                          }}
+                          className="flex-1 py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 active:scale-[0.98]"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          )}
 
           {/* Personalization preview — before/after comparison for Email 1 */}
           {showGeneratedResults && email1RawForPreview && prospectFirstName.trim() && (
