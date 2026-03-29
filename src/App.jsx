@@ -895,6 +895,90 @@ Rules: 3–4 sentences max, end with a clear next step, sign off with only "${fi
   return content[0].text.trim()
 }
 
+// ─── Re-engage Mode ──────────────────────────────────────────────────────────
+
+const REENGAGE_EMAIL_CARDS = [
+  { key: 'curiosity_bump', title: 'Curiosity Bump'  },
+  { key: 'value_update',   title: 'Value Update'    },
+  { key: 'easy_out',       title: 'Easy Out'         },
+]
+const REENGAGE_SUBJECT_KEYS = ['curiosity_bump_subject', 'value_update_subject', 'easy_out_subject']
+
+async function generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, toneLabel, industry, voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const senderFirst = senderName.split(/\s+/)[0] || senderName
+  const prospectFirst = (reengageName.trim().split(/\s+/)[0] || reengageName.trim()) || 'there'
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 1800,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Generate 3 re-engagement emails for a prospect who has gone cold.
+
+SENDER NAME (sign off with first name only): ${senderName}
+SENDER'S PRODUCT/SERVICE: ${senderOffer}
+PROSPECT NAME: ${reengageName}
+PROSPECT COMPANY: ${reengageCompany}
+ORIGINAL OUTREACH TOPIC: ${reengageTopic}
+TIME SINCE LAST CONTACT: ${reengageLastContact}
+REASON FOR REACHING BACK OUT NOW: ${reengageReason}
+INDUSTRY: ${industry}
+TARGET WORD COUNT: ~${targetWordCount} words per email body (sign-off included; ±10 words is fine).
+
+Each email must feel meaningfully different in angle, energy, and tone — no recycled sentences, no similar openers:
+
+1. Curiosity Bump: Reference something genuinely new — a recent industry development, news, or update — that earns the right to come back. Do NOT rehash the original pitch. The new thing is the hook; the pitch is secondary.
+
+2. Value Update: Lead with a concrete result, client win, or case study that DID NOT EXIST when you last reached out. Make the prospect feel they missed something real, not just a follow-up.
+
+3. Easy Out: Short, direct, and explicitly low-pressure. Give them permission to say no. Acknowledge it's been a while, make a yes/no reply easy, and leave the door open gracefully. This is the breakup email — often the highest reply rate in any sequence.
+
+Rules:
+- Address the prospect by first name: ${prospectFirst}
+- Each email must open with a completely different hook
+- Sign off every email with "${senderFirst}" only (never the product name)
+- End 1 and 2 with a clear, specific next step; end 3 with a single easy yes/no question
+
+Return ONLY a valid JSON object (no markdown, no extra keys) with exactly these string keys:
+- curiosity_bump_subject, curiosity_bump
+- value_update_subject, value_update
+- easy_out_subject, easy_out`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  const parsed = parseEmailJson(content[0].text)
+  return REENGAGE_EMAIL_CARDS.map(({ key, title }, i) => ({
+    title,
+    subject: typeof parsed[REENGAGE_SUBJECT_KEYS[i]] === 'string' ? parsed[REENGAGE_SUBJECT_KEYS[i]] : '',
+    body:    typeof parsed[key] === 'string' ? parsed[key] : '',
+  }))
+}
+
 // ─── Drip Sequence ──────────────────────────────────────────────────────────
 
 const DRIP_SEQUENCE_SLOTS = [
@@ -1359,11 +1443,18 @@ function TextareaCharFooter({ length, max, hint, hintMinLength = 20 }) {
 }
 
 function App() {
+  const [appMode, setAppMode] = useState('generate') // 'generate' | 'reengage'
   const [nameAndOffer, setNameAndOffer] = useState('')
   const [targetAndRole, setTargetAndRole] = useState('')
   const [goal, setGoal] = useState('Book a Call')
   const [industry, setIndustry] = useState('Other')
   const [tone, setTone] = useState('Conversational')
+  // Re-engage form fields
+  const [reengageName, setReengageName] = useState('')
+  const [reengageCompany, setReengageCompany] = useState('')
+  const [reengageTopic, setReengageTopic] = useState('')
+  const [reengageLastContact, setReengageLastContact] = useState('')
+  const [reengageReason, setReengageReason] = useState('')
   const [emails, setEmails] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1429,10 +1520,20 @@ function App() {
   const atFreeLimit = !unlocked && usageCount >= FREE_GENERATIONS_LIMIT
   const showPersistentLimitBanner = atFreeLimit && limitModalDismissed && !showUpgradeModal
   const blurContentForPaywall = showUpgradeModal && !unlocked
-  const allFilled = nameAndOffer.trim() !== '' && targetAndRole.trim() !== '' && goal.trim() !== ''
-  const formFilledCount = [nameAndOffer, targetAndRole, goal].filter((s) => s.trim().length > 0).length
+
+  // Form validation — differs by mode
+  const reengageFilledFields = [reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason]
+  const reengageFilledCount = reengageFilledFields.filter((s) => s.trim().length > 0).length
+  const reengageAllFilled = nameAndOffer.trim() !== '' && reengageFilledCount >= 3 &&
+    reengageName.trim() !== '' && reengageCompany.trim() !== '' && reengageTopic.trim() !== ''
+  const allFilled = appMode === 'reengage'
+    ? reengageAllFilled
+    : (nameAndOffer.trim() !== '' && targetAndRole.trim() !== '' && goal.trim() !== '')
+  const formFilledCount = appMode === 'reengage'
+    ? Math.min(3, [nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason].filter((s) => s.trim().length > 0).length)
+    : [nameAndOffer, targetAndRole, goal].filter((s) => s.trim().length > 0).length
   const formProgressPct = FORM_PROGRESS_BY_FILLED[formFilledCount]
-  const formReady = formFilledCount === 3
+  const formReady = appMode === 'reengage' ? reengageAllFilled : formFilledCount === 3
   const canGenerate = allFilled && !loading && (unlocked || usageRemaining > 0)
 
   const displayEmails = emails ?? PLACEHOLDER_EMAILS
@@ -1635,6 +1736,11 @@ function App() {
     setGoal('Book a Call')
     setIndustry('Other')
     setTone('Conversational')
+    setReengageName('')
+    setReengageCompany('')
+    setReengageTopic('')
+    setReengageLastContact('')
+    setReengageReason('')
     setEmails(null)
     setEmail1RawForPreview(null)
     setError(null)
@@ -1742,9 +1848,14 @@ function App() {
     setShortVariants(null)
     setVariantsError(null)
     setVariantCopiedIndex(null)
-    const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint)
+      let result
+      if (appMode === 'reengage') {
+        result = await generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, tone, industry, voiceProfile, targetLength)
+      } else {
+        const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
+        result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint)
+      }
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -2275,10 +2386,34 @@ function App() {
       <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-8 sm:py-12">
         {/* Main card */}
         <div className="bg-slate-800/90 rounded-2xl border border-slate-700/50 p-6 sm:p-8 shadow-xl shadow-black/20">
-          <h2 className="text-2xl sm:text-3xl font-semibold text-center text-white mb-3 sm:mb-4">
-            AI Cold Email Generator
-          </h2>
+          {/* Mode tabs */}
+          <div className="flex gap-1.5 mb-6 sm:mb-8 rounded-xl border border-slate-700/50 bg-slate-900/40 p-1.5">
+            <button
+              type="button"
+              onClick={() => setAppMode('generate')}
+              className={`flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                appMode === 'generate'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Cold Email Generator
+            </button>
+            <button
+              type="button"
+              onClick={() => setAppMode('reengage')}
+              className={`flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                appMode === 'reengage'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Re-engage
+            </button>
+          </div>
 
+          {/* Load Example — generator mode only */}
+          {appMode === 'generate' && (
           <div className="flex justify-center mb-6 sm:mb-8">
             <div className="relative" ref={exampleMenuRef}>
               <button
@@ -2327,8 +2462,10 @@ function App() {
               )}
             </div>
           </div>
+          )} {/* end appMode === 'generate' Load Example */}
 
           <div className="space-y-5 sm:space-y-6">
+            {/* Sender info — shared across both modes */}
             <div>
               <label
                 htmlFor="name-offer"
@@ -2356,7 +2493,87 @@ function App() {
               />
             </div>
 
+            {/* Re-engage mode fields */}
+            {appMode === 'reengage' && (
+              <>
+                <div>
+                  <label htmlFor="reengage-name" className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageName.trim().length)}`} aria-hidden="true" />
+                    Prospect Name
+                  </label>
+                  <input
+                    id="reengage-name"
+                    type="text"
+                    value={reengageName}
+                    onChange={(e) => setReengageName(e.target.value)}
+                    placeholder="e.g. Sarah Chen"
+                    disabled={loading}
+                    className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="reengage-company" className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageCompany.trim().length)}`} aria-hidden="true" />
+                    Company
+                  </label>
+                  <input
+                    id="reengage-company"
+                    type="text"
+                    value={reengageCompany}
+                    onChange={(e) => setReengageCompany(e.target.value)}
+                    placeholder="e.g. Acme Corp"
+                    disabled={loading}
+                    className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="reengage-topic" className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageTopic.trim().length)}`} aria-hidden="true" />
+                    Original Outreach Topic
+                  </label>
+                  <textarea
+                    id="reengage-topic"
+                    value={reengageTopic}
+                    onChange={(e) => setReengageTopic(e.target.value)}
+                    placeholder="e.g. Pitched our sales automation tool to help with their outbound process"
+                    rows={3}
+                    disabled={loading}
+                    className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow resize-y min-h-[5rem] disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="reengage-last-contact" className="block text-sm font-medium text-slate-300 mb-2">
+                    How Long Ago Did You Last Contact Them?
+                  </label>
+                  <input
+                    id="reengage-last-contact"
+                    type="text"
+                    value={reengageLastContact}
+                    onChange={(e) => setReengageLastContact(e.target.value)}
+                    placeholder="e.g. 30 days ago, 6 weeks ago, 3 months ago"
+                    disabled={loading}
+                    className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="reengage-reason" className="block text-sm font-medium text-slate-300 mb-2">
+                    Why Are You Reaching Back Out Now?
+                  </label>
+                  <textarea
+                    id="reengage-reason"
+                    value={reengageReason}
+                    onChange={(e) => setReengageReason(e.target.value)}
+                    placeholder="e.g. Just shipped a new feature they asked about, saw a news story about their company, new case study to share"
+                    rows={3}
+                    disabled={loading}
+                    className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow resize-y min-h-[5rem] disabled:opacity-60"
+                  />
+                </div>
+              </>
+            )}
+
             {/* Voice Calibration panel */}
+            {appMode === 'generate' && (
             <div className="rounded-xl border border-slate-700/40 bg-slate-700/20 overflow-hidden">
               <button
                 type="button"
@@ -2444,7 +2661,11 @@ function App() {
                 </div>
               )}
             </div>
+            )} {/* end appMode === 'generate' voice calibration */}
 
+            {/* Generator-only fields: target, goal, pain point, progress */}
+            {appMode === 'generate' && (
+            <>
             <div>
               <label
                 htmlFor="target-role"
@@ -2559,6 +2780,9 @@ function App() {
                 )}
               </div>
             </div>
+
+            </>
+            )} {/* end appMode === 'generate' generator-only fields */}
 
             <div>
               <label htmlFor="industry" className="block text-sm font-medium text-slate-300 mb-2">
@@ -2745,9 +2969,10 @@ function App() {
           {/* Sequence mode toggle */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 sm:mb-6">
             <h2 className="text-xl font-semibold text-slate-200">
-              {sequenceMode === 'drip' ? 'Full Drip Sequence' : 'Generated Emails'}
+              {appMode === 'reengage' ? 'Re-engagement Emails' : sequenceMode === 'drip' ? 'Full Drip Sequence' : 'Generated Emails'}
             </h2>
             <div className="flex items-center gap-2">
+            {appMode === 'reengage' ? null : (<>
               <button
                 type="button"
                 onClick={() => setSequenceMode('standard')}
@@ -2787,6 +3012,7 @@ function App() {
                   <span className="rounded-full bg-amber-500/20 border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 leading-none">Pro</span>
                 </a>
               )}
+            </>)}
             </div>
           </div>
 
@@ -2794,8 +3020,8 @@ function App() {
           {sequenceMode === 'standard' && (
           <>
 
-          {/* Icebreakers section */}
-          {showGeneratedResults && (
+          {/* Icebreakers section — hidden in reengage mode */}
+          {appMode !== 'reengage' && showGeneratedResults && (
             <div className="mb-7 rounded-xl border border-slate-700/60 bg-slate-800/50 p-4 sm:p-5 animate-fade-in">
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div>
