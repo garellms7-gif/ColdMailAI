@@ -223,6 +223,31 @@ const EXAMPLE_SCENARIOS = [
   },
 ]
 
+/** Email copywriting frameworks */
+const EMAIL_FRAMEWORKS = [
+  {
+    value: 'PAS',
+    label: 'PAS',
+    description: 'Problem, Agitation, Solution',
+    tooltip: 'Open with the prospect\'s pain, agitate it by describing the consequence, then present your offer as the solution.',
+    promptInstruction: 'Structure each email using the PAS framework: (1) Problem — open by naming the prospect\'s specific pain point directly; (2) Agitation — deepen the pain by describing the downstream consequence or cost of not fixing it; (3) Solution — introduce your offer as the clear fix. The three sections should feel like a natural narrative arc, not labeled blocks.',
+  },
+  {
+    value: 'AIDA',
+    label: 'AIDA',
+    description: 'Attention, Interest, Desire, Action',
+    tooltip: 'Hook with a bold statement, build interest with context, create desire with the outcome, close with a CTA.',
+    promptInstruction: 'Structure each email using the AIDA framework: (1) Attention — open with a bold, unexpected, or provocative statement that stops them mid-scroll; (2) Interest — provide relevant context or a surprising insight that earns continued reading; (3) Desire — paint a specific, vivid picture of the outcome they\'ll get; (4) Action — close with one clear, low-friction CTA. Keep each section tight.',
+  },
+  {
+    value: 'BAB',
+    label: 'BAB',
+    description: 'Before, After, Bridge',
+    tooltip: 'Describe their current situation, paint the picture of life after your solution, then bridge the gap with your offer.',
+    promptInstruction: 'Structure each email using the BAB framework: (1) Before — describe their current frustrating reality in concrete terms the prospect will instantly recognise; (2) After — paint a vivid, specific picture of what their world looks like once the problem is solved; (3) Bridge — present your offer as the direct path from Before to After. Make the contrast between Before and After feel stark and desirable.',
+  },
+]
+
 /** Label + system-prompt line: "Write in a [tone] tone — ..." */
 const TONE_OPTIONS = [
   {
@@ -1099,13 +1124,15 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS') {
   const personalizationBlock = prospectFirstName.trim()
     ? `\nPERSONALIZATION (Email 1 only): Use the literal token {{firstName}} wherever you include the prospect's first name in Email 1's opening greeting and in the subject_short field. Do not write the actual name — write {{firstName}} exactly so it can be dynamically replaced. Example opening: "Hi {{firstName}}," — example subject: "Quick question for {{firstName}} at [Company]". Do NOT use {{firstName}} in Email 2 or Email 3.`
     : ''
   const painPointBlock = painPoint.trim()
     ? `\nPROSPECT PAIN POINT: ${painPoint.trim()}\nLead with or address this specific challenge naturally in all three emails — it should feel like you understand their exact situation.`
     : ''
+  const fw = EMAIL_FRAMEWORKS.find((f) => f.value === framework) ?? EMAIL_FRAMEWORKS[0]
+  const frameworkBlock = `\nEMAIL FRAMEWORK (${fw.label} — ${fw.description}): ${fw.promptInstruction}`
   return `Generate 3 cold emails for the following situation:
 
 SENDER'S PERSONAL NAME (use for opening, in-body reference, and sign-off — sign off with first name only): ${senderName}
@@ -1115,7 +1142,7 @@ TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
 Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
-TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${painPointBlock}${personalizationBlock}
+TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${painPointBlock}${personalizationBlock}${frameworkBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -1131,7 +1158,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '') {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS') {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1146,7 +1173,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
       max_tokens: 1800,
       system: buildSystemPromptWithTone(toneLabel, voiceProfile),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount, painPoint) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount, painPoint, framework) },
       ],
     }),
   })
@@ -1449,6 +1476,8 @@ function App() {
   const [goal, setGoal] = useState('Book a Call')
   const [industry, setIndustry] = useState('Other')
   const [tone, setTone] = useState('Conversational')
+  const [framework, setFramework] = useState('PAS')
+  const [appliedFramework, setAppliedFramework] = useState(null) // set after generation
   // Re-engage form fields
   const [reengageName, setReengageName] = useState('')
   const [reengageCompany, setReengageCompany] = useState('')
@@ -1736,6 +1765,8 @@ function App() {
     setGoal('Book a Call')
     setIndustry('Other')
     setTone('Conversational')
+    setFramework('PAS')
+    setAppliedFramework(null)
     setReengageName('')
     setReengageCompany('')
     setReengageTopic('')
@@ -1852,9 +1883,11 @@ function App() {
       let result
       if (appMode === 'reengage') {
         result = await generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, tone, industry, voiceProfile, targetLength)
+        setAppliedFramework(null)
       } else {
         const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
-        result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint)
+        result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint, framework)
+        setAppliedFramework(framework)
       }
       setEmails(result)
       if (!unlocked) {
@@ -2868,6 +2901,37 @@ function App() {
             </div>
           </div>
 
+          {appMode === 'generate' && (
+          <div className="mt-6">
+            <div className="flex items-center gap-1.5 mb-2">
+              <label htmlFor="email-framework" className="text-sm font-medium text-slate-300">
+                Email Framework
+              </label>
+              <span className="group relative inline-flex">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5 text-slate-500 cursor-help" aria-hidden="true">
+                  <path fillRule="evenodd" d="M15 8A7 7 0 1 1 1 8a7 7 0 0 1 14 0ZM9 5a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM6.75 8a.75.75 0 0 0 0 1.5h.75v1.75a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8.25 8h-1.5Z" clipRule="evenodd" />
+                </svg>
+                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-300 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10 text-center">
+                  {EMAIL_FRAMEWORKS.find((f) => f.value === framework)?.tooltip ?? ''}
+                </span>
+              </span>
+            </div>
+            <select
+              id="email-framework"
+              value={framework}
+              onChange={(e) => setFramework(e.target.value)}
+              disabled={loading}
+              className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer transition-shadow disabled:opacity-60"
+            >
+              {EMAIL_FRAMEWORKS.map((fw) => (
+                <option key={fw.value} value={fw.value} className="bg-slate-800 text-white">
+                  {fw.label} — {fw.description}
+                </option>
+              ))}
+            </select>
+          </div>
+          )}
+
           <div className="mt-6 rounded-xl border border-slate-700/50 bg-slate-700/20 px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -3136,6 +3200,16 @@ function App() {
                     <StarBookmarkIcon filled={bookmarkFlashIndex === index} />
                   </button>
                 </div>
+                {appliedFramework && showGeneratedResults && (
+                  <div className="mb-3">
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full border border-indigo-500/40 bg-indigo-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-300"
+                      title={EMAIL_FRAMEWORKS.find((f) => f.value === appliedFramework)?.tooltip ?? ''}
+                    >
+                      {appliedFramework}
+                    </span>
+                  </div>
+                )}
                 <div className="mb-4 rounded-lg border border-amber-400/55 bg-amber-50 px-3 py-2 shadow-sm">
                   <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-1">
                     Subject line
