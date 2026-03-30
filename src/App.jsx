@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from 'react'
 import { jsPDF } from 'jspdf'
 
 const FREE_GENERATIONS_LIMIT = 6
@@ -770,6 +770,65 @@ GOAL: ${goal}
 Style reference (do NOT copy, just match the vibe): "${defaultLine}"
 
 Return ONLY the single sentence — no quotes, no labels, no commentary.`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
+async function quickEditEmail(emailBody, toneLabel, nameAndOffer, targetAndRole, goal, voiceProfile = null) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const firstName = senderName.split(/\s+/)[0] || senderName
+  const wc = countWords(emailBody)
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 700,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Improve this cold email while keeping the same length, tone, and core message.
+
+SENDER: ${senderName}
+PRODUCT/SERVICE: ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+TARGET WORD COUNT: ~${wc} words
+
+ORIGINAL EMAIL:
+---
+${emailBody}
+---
+
+Rules:
+- Keep approximately the same word count (${wc} words ±10)
+- Preserve the sign-off "Best,\\n${firstName}" exactly
+- Keep the same offer, CTA, and core message unchanged
+- Improve: hook strength, sentence clarity, specificity, flow, and persuasiveness
+- Return ONLY the improved email body — no subject line, no labels, no markdown, no commentary`,
         },
       ],
     }),
@@ -1762,6 +1821,13 @@ function App() {
   const [patternInterruptLine, setPatternInterruptLine] = useState(null) // null = not active
   const [patternInterruptLoading, setPatternInterruptLoading] = useState(false)
   const [patternInterruptError, setPatternInterruptError] = useState(null)
+  // Inline editing
+  const [cardEditMode, setCardEditMode] = useState(() => [false, false, false])
+  const [subjectEditMode, setSubjectEditMode] = useState(() => [false, false, false])
+  const [quickEditLoading, setQuickEditLoading] = useState(() => [false, false, false])
+  const [quickEditError, setQuickEditError] = useState(() => [null, null, null])
+  const bodyRefs = useRef([null, null, null])
+  const subjectRefs = useRef([null, null, null])
   const [inboxPreviewIndex, setInboxPreviewIndex] = useState(null)
   const [inboxPreviewCopied, setInboxPreviewCopied] = useState(false)
   const inboxPreviewCopyTimerRef = useRef(null)
@@ -2011,6 +2077,28 @@ function App() {
     setPatternInterruptError(null)
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Sync email body text into contenteditable divs whenever state changes, but only when not focused
+  useLayoutEffect(() => {
+    ;[0, 1, 2].forEach((i) => {
+      const el = bodyRefs.current[i]
+      if (el && el !== document.activeElement) {
+        const target = emailCardBodies[i] ?? ''
+        if (el.innerText !== target) el.innerText = target
+      }
+    })
+  }, [emailCardBodies])
+
+  // Sync subject text into contenteditable spans whenever state changes, but only when not focused
+  useLayoutEffect(() => {
+    ;[0, 1, 2].forEach((i) => {
+      const el = subjectRefs.current[i]
+      if (el && el !== document.activeElement) {
+        const target = emailCardSubjects[i] ?? ''
+        if (el.innerText !== target) el.innerText = target
+      }
+    })
+  }, [emailCardSubjects])
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -2077,6 +2165,10 @@ function App() {
     setPatternInterruptLine(null)
     setPatternInterruptLoading(false)
     setPatternInterruptError(null)
+    setCardEditMode([false, false, false])
+    setSubjectEditMode([false, false, false])
+    setQuickEditLoading([false, false, false])
+    setQuickEditError([null, null, null])
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -2403,6 +2495,62 @@ function App() {
       setPatternInterruptLoading(false)
     }
   }, [industry, nameAndOffer, targetAndRole, goal, tone, voiceProfile])
+
+  // Body contenteditable handlers
+  const handleBodyFocus = useCallback((index) => {
+    setCardEditMode((prev) => { const next = [...prev]; next[index] = true; return next })
+  }, [])
+
+  const handleBodyBlur = useCallback((index) => {
+    setCardEditMode((prev) => { const next = [...prev]; next[index] = false; return next })
+    const el = bodyRefs.current[index]
+    if (el) {
+      const content = el.innerText ?? ''
+      setEmailCardBodies((prev) => { const next = [...prev]; next[index] = content; return next })
+    }
+  }, [])
+
+  const handleBodyInput = useCallback((index) => {
+    const el = bodyRefs.current[index]
+    if (!el) return
+    setEmailCardBodies((prev) => { const next = [...prev]; next[index] = el.innerText ?? ''; return next })
+  }, [])
+
+  // Subject contenteditable handlers
+  const handleSubjectFocus = useCallback((index) => {
+    setSubjectEditMode((prev) => { const next = [...prev]; next[index] = true; return next })
+  }, [])
+
+  const handleSubjectBlur = useCallback((index) => {
+    setSubjectEditMode((prev) => { const next = [...prev]; next[index] = false; return next })
+    const el = subjectRefs.current[index]
+    if (el) {
+      const content = (el.innerText ?? '').replace(/\n/g, '').trim()
+      setEmailCardSubjects((prev) => { const next = [...prev]; next[index] = content; return next })
+    }
+  }, [])
+
+  const handleSubjectInput = useCallback((index) => {
+    const el = subjectRefs.current[index]
+    if (!el) return
+    setEmailCardSubjects((prev) => { const next = [...prev]; next[index] = (el.innerText ?? '').replace(/\n/g, ''); return next })
+  }, [])
+
+  // Quick Edit handler — improves the email body via Claude API
+  const handleQuickEdit = useCallback(async (index) => {
+    const body = emailCardBodies[index] ?? ''
+    if (!body.trim()) return
+    setQuickEditError((prev) => { const next = [...prev]; next[index] = null; return next })
+    setQuickEditLoading((prev) => { const next = [...prev]; next[index] = true; return next })
+    try {
+      const improved = await quickEditEmail(body, tone, nameAndOffer, targetAndRole, goal, voiceProfile)
+      setEmailCardBodies((prev) => { const next = [...prev]; next[index] = improved; return next })
+    } catch (err) {
+      setQuickEditError((prev) => { const next = [...prev]; next[index] = err.message || 'Quick edit failed.'; return next })
+    } finally {
+      setQuickEditLoading((prev) => { const next = [...prev]; next[index] = false; return next })
+    }
+  }, [emailCardBodies, tone, nameAndOffer, targetAndRole, goal, voiceProfile])
 
   const handleShareLinkCopy = useCallback(() => {
     navigator.clipboard.writeText('https://garell.gumroad.com/l/cfjno')
@@ -3630,21 +3778,28 @@ function App() {
                   <p className="text-[10px] font-bold uppercase tracking-wide text-amber-800 mb-1">
                     Subject line
                   </p>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={emailCardSubjects[index] ?? ''}
-                      onChange={(e) => {
-                        const next = e.target.value
-                        setEmailCardSubjects((prev) => {
-                          const copy = [...prev]
-                          copy[index] = next
-                          return copy
-                        })
-                      }}
-                      placeholder="Enter subject line…"
+                  <div className="flex items-start gap-2">
+                    <span
+                      ref={(el) => { subjectRefs.current[index] = el }}
+                      contentEditable
+                      suppressContentEditableWarning
+                      role="textbox"
+                      aria-multiline="false"
                       aria-label={`Subject line for ${email.title}`}
-                      className="flex-1 min-w-0 bg-transparent text-sm font-medium text-slate-900 placeholder-amber-700/40 focus:outline-none leading-snug py-0.5"
+                      onFocus={() => handleSubjectFocus(index)}
+                      onBlur={() => handleSubjectBlur(index)}
+                      onInput={() => handleSubjectInput(index)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur() } }}
+                      onPaste={(e) => {
+                        e.preventDefault()
+                        const text = e.clipboardData.getData('text/plain').replace(/\n/g, ' ')
+                        document.execCommand('insertText', false, text)
+                      }}
+                      className={`flex-1 min-w-0 text-sm font-medium text-slate-900 focus:outline-none leading-snug py-0.5 cursor-text break-words rounded transition-[box-shadow] duration-150 ${
+                        subjectEditMode[index]
+                          ? 'ring-1 ring-amber-400/70 px-1 -mx-1'
+                          : 'hover:ring-1 hover:ring-amber-300/40 px-1 -mx-1'
+                      }`}
                     />
                     <button
                       type="button"
@@ -3724,31 +3879,43 @@ function App() {
                     </div>
                   </div>
                 )}
-                <div className="relative group/body mb-2 flex-1 min-h-[8rem] flex flex-col">
-                  <p
-                    className="pointer-events-none absolute right-2 top-2 z-[1] text-[11px] text-slate-500 opacity-0 transition-opacity duration-200 group-hover/body:opacity-100 group-focus-within/body:opacity-0"
-                    aria-hidden="true"
-                  >
-                    Click to edit
-                  </p>
-                  <textarea
-                    value={emailCardBodies[index] ?? ''}
-                    onChange={(e) => {
-                      const next = e.target.value
-                      setEmailCardBodies((prev) => {
-                        const copy = [...prev]
-                        copy[index] = next
-                        return copy
-                      })
-                    }}
+                <div className="relative mb-2">
+                  {cardEditMode[index] && (
+                    <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
+                      <span className="text-[10px] font-medium text-blue-400 leading-none">Editing</span>
+                      <button
+                        type="button"
+                        onClick={() => undoEmailCardEdits(index)}
+                        className="text-[10px] font-semibold text-slate-400 hover:text-amber-300 transition-colors focus:outline-none rounded px-1.5 py-0.5 border border-slate-600/70 bg-slate-800/90 leading-none"
+                      >
+                        Undo
+                      </button>
+                    </div>
+                  )}
+                  <div
+                    ref={(el) => { bodyRefs.current[index] = el }}
+                    contentEditable
+                    suppressContentEditableWarning
+                    role="textbox"
+                    aria-multiline="true"
                     aria-label={`${email.title} body`}
-                    rows={8}
-                    className={`w-full flex-1 min-h-[8rem] rounded-lg border text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 focus:outline-none focus:ring-2 ${
-                      index === 0 && patternInterruptLine
-                        ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/8 focus:border-amber-400/80 focus:bg-amber-500/10 focus:ring-amber-400/35'
+                    onFocus={() => handleBodyFocus(index)}
+                    onBlur={() => handleBodyBlur(index)}
+                    onInput={() => handleBodyInput(index)}
+                    onPaste={(e) => {
+                      e.preventDefault()
+                      const text = e.clipboardData.getData('text/plain')
+                      document.execCommand('insertText', false, text)
+                      handleBodyInput(index)
+                    }}
+                    className={`w-full min-h-[10rem] rounded-lg border text-slate-300 text-sm leading-relaxed px-3 py-2.5 transition-[border-color,box-shadow,background-color] duration-200 focus:outline-none cursor-text whitespace-pre-wrap break-words ${
+                      cardEditMode[index]
+                        ? 'border-blue-400/80 bg-slate-900/35 ring-2 ring-blue-400/30'
+                        : index === 0 && patternInterruptLine
+                        ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/8'
                         : index === 0 && icebreakerActiveIndex !== null
-                        ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/8 focus:border-sky-400/80 focus:bg-sky-500/10 focus:ring-sky-400/35'
-                        : 'border-transparent bg-transparent hover:bg-slate-900/25 focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-sky-400/35'
+                        ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/8'
+                        : 'border-transparent bg-transparent hover:bg-slate-900/25'
                     }`}
                   />
                 </div>
@@ -3942,6 +4109,29 @@ function App() {
                     </div>
                   )
                 })()}
+                {showGeneratedResults && (
+                  <div className="mb-2">
+                    {quickEditError[index] && (
+                      <p className="text-[11px] text-red-400 mb-1.5 leading-snug">{quickEditError[index]}</p>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleQuickEdit(index)}
+                      disabled={quickEditLoading[index] || loading}
+                      className="w-full py-2.5 rounded-xl border border-blue-500/40 bg-blue-900/15 text-blue-300 text-sm font-medium hover:bg-blue-900/30 hover:text-blue-200 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99]"
+                    >
+                      {quickEditLoading[index] ? (
+                        <span className="flex items-center justify-center gap-2">
+                          <svg className="h-3.5 w-3.5 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                          </svg>
+                          Improving…
+                        </span>
+                      ) : '⚡ Quick Edit'}
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setInboxPreviewIndex(index)}
