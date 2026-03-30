@@ -248,6 +248,19 @@ const EMAIL_FRAMEWORKS = [
   },
 ]
 
+/** Per-industry default pattern-interrupt openers for Email 1 */
+const PATTERN_INTERRUPT_LINES = {
+  'SaaS/Tech':   "I know you probably get 50 of these a week...",
+  Agency:        "I'll skip the part where I tell you I'm different...",
+  eCommerce:     "This isn't another 'scale your store' pitch...",
+  'Real Estate': "I won't waste your time with a long pitch...",
+  Finance:       "I'll be upfront — this is a cold email...",
+  Healthcare:    "I know you're busy with patients, not emails...",
+  Recruitment:   "I know your inbox is full of recruiters...",
+  Coaching:      "I know you've heard this before...",
+  Other:         "I'll keep this brief — promise.",
+}
+
 /** Label + system-prompt line: "Write in a [tone] tone — ..." */
 const TONE_OPTIONS = [
   {
@@ -700,6 +713,62 @@ Rules:
 - Keep approximately the same word count (±15 words)
 - Do NOT change the meaning, omit the offer, or remove the CTA
 - Return ONLY the rewritten email body — no subject line, no labels, no markdown, no commentary`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
+async function generatePatternInterruptLine(industry, nameAndOffer, targetAndRole, goal, toneLabel, voiceProfile = null) {
+  const defaultLine = PATTERN_INTERRUPT_LINES[industry] ?? PATTERN_INTERRUPT_LINES['Other']
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 80,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Write ONE pattern-interrupt opening sentence for a cold email to someone in the ${industry} industry.
+
+The line must:
+- Acknowledge that the reader gets a lot of cold emails (without whining about it)
+- Be self-aware, disarming, and human — never salesy
+- NOT pitch the product or mention the sender's offer
+- Be 8–15 words, conversational, ending with "..." to signal more is coming
+- Feel fresh — avoid clichés like "I know you're busy"
+
+SENDER: ${senderName}
+OFFER: ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+
+Style reference (do NOT copy, just match the vibe): "${defaultLine}"
+
+Return ONLY the single sentence — no quotes, no labels, no commentary.`,
         },
       ],
     }),
@@ -1684,6 +1753,11 @@ function App() {
   const [simplifyError, setSimplifyError] = useState(() => [null, null, null])
   const [simplifyWordCountBefore, setSimplifyWordCountBefore] = useState(() => [null, null, null])
   const [simplifyWordCountAfter, setSimplifyWordCountAfter] = useState(() => [null, null, null])
+  // Pattern interrupt opener
+  const [patternInterruptEnabled, setPatternInterruptEnabled] = useState(false)
+  const [patternInterruptLine, setPatternInterruptLine] = useState(null) // null = not active
+  const [patternInterruptLoading, setPatternInterruptLoading] = useState(false)
+  const [patternInterruptError, setPatternInterruptError] = useState(null)
   const [inboxPreviewIndex, setInboxPreviewIndex] = useState(null)
   const [inboxPreviewCopied, setInboxPreviewCopied] = useState(false)
   const inboxPreviewCopyTimerRef = useRef(null)
@@ -1921,6 +1995,16 @@ function App() {
       .finally(() => setReplyTemplatesLoading(false))
   }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-set pattern interrupt default line when new emails arrive with toggle on
+  useEffect(() => {
+    if (!emails || !patternInterruptEnabled) {
+      if (!emails) setPatternInterruptLine(null)
+      return
+    }
+    setPatternInterruptLine((prev) => prev ?? (PATTERN_INTERRUPT_LINES[industry] ?? PATTERN_INTERRUPT_LINES['Other']))
+    setPatternInterruptError(null)
+  }, [emails]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const clearFormAndResults = () => {
     setNameAndOffer('')
     setTargetAndRole('')
@@ -1982,6 +2066,9 @@ function App() {
     setSimplifyError([null, null, null])
     setSimplifyWordCountBefore([null, null, null])
     setSimplifyWordCountAfter([null, null, null])
+    setPatternInterruptLine(null)
+    setPatternInterruptLoading(false)
+    setPatternInterruptError(null)
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -2079,14 +2166,19 @@ function App() {
   const handleCopy = useCallback(
     (email, index) => {
       const ps = PS_EMAIL_INDICES.includes(index) && psLines[index] ? psLines[index] : null
-      const emailWithPs = ps ? { ...email, body: `${email.body}\n\n${ps}` } : email
-      const text = formatSingleEmailForClipboard(emailWithPs)
+      let body = email.body
+      if (index === 0 && patternInterruptLine) {
+        body = `${patternInterruptLine}\n\n${body}`
+      }
+      const bodyWithPs = ps ? `${body}\n\n${ps}` : body
+      const emailToCopy = { ...email, body: bodyWithPs }
+      const text = formatSingleEmailForClipboard(emailToCopy)
       navigator.clipboard.writeText(text)
       setCopiedSubjectIndex(null)
       setCopiedIndex(index)
       window.setTimeout(() => setCopiedIndex(null), 2000)
     },
-    [psLines],
+    [psLines, patternInterruptLine],
   )
 
   const handleCopySubject = useCallback((subjectLine, index) => {
@@ -2273,6 +2365,34 @@ function App() {
       setSimplifyLoading((prev) => { const next = [...prev]; next[index] = false; return next })
     }
   }, [emailCardBodies, tone, nameAndOffer, targetAndRole, goal, voiceProfile])
+
+  const handlePatternInterruptToggle = useCallback(() => {
+    if (patternInterruptEnabled) {
+      setPatternInterruptEnabled(false)
+      setPatternInterruptLine(null)
+      setPatternInterruptError(null)
+    } else {
+      setPatternInterruptEnabled(true)
+      setPatternInterruptError(null)
+      // If emails already exist, set the default line immediately
+      if (showGeneratedResults) {
+        setPatternInterruptLine(PATTERN_INTERRUPT_LINES[industry] ?? PATTERN_INTERRUPT_LINES['Other'])
+      }
+    }
+  }, [patternInterruptEnabled, showGeneratedResults, industry])
+
+  const handleRefreshPatternInterrupt = useCallback(async () => {
+    setPatternInterruptLoading(true)
+    setPatternInterruptError(null)
+    try {
+      const newLine = await generatePatternInterruptLine(industry, nameAndOffer, targetAndRole, goal, tone, voiceProfile)
+      setPatternInterruptLine(newLine)
+    } catch (err) {
+      setPatternInterruptError(err.message || 'Could not refresh.')
+    } finally {
+      setPatternInterruptLoading(false)
+    }
+  }, [industry, nameAndOffer, targetAndRole, goal, tone, voiceProfile])
 
   const handleShareLinkCopy = useCallback(() => {
     navigator.clipboard.writeText('https://garell.gumroad.com/l/cfjno')
@@ -3145,6 +3265,41 @@ function App() {
           </div>
           )}
 
+          {appMode === 'generate' && (
+          <div className="mt-6 rounded-xl border border-slate-700/50 bg-slate-700/20 px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-200">Pattern Interrupt Opener</p>
+                <p className="text-xs text-slate-500 mt-0.5">Prepends a self-aware, objection-acknowledging line to Email 1 before the pitch</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={patternInterruptEnabled}
+                onClick={handlePatternInterruptToggle}
+                disabled={loading}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  patternInterruptEnabled ? 'bg-amber-600' : 'bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg transition duration-200 ease-in-out ${
+                    patternInterruptEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+            {patternInterruptEnabled && (
+              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-900/15 px-3 py-2.5">
+                <p className="text-[10px] font-bold uppercase tracking-wide text-amber-500/70 mb-1">Preview for {industry}</p>
+                <p className="text-xs text-amber-200/80 italic leading-relaxed">
+                  "{PATTERN_INTERRUPT_LINES[industry] ?? PATTERN_INTERRUPT_LINES['Other']}"
+                </p>
+              </div>
+            )}
+          </div>
+          )}
+
           <div className="mt-6 rounded-xl border border-slate-700/50 bg-slate-700/20 px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -3468,6 +3623,36 @@ function App() {
                     </button>
                   )}
                 </div>
+                {/* Pattern Interrupt active indicator — Email 1 only */}
+                {index === 0 && showGeneratedResults && patternInterruptLine && (
+                  <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/8 px-3 py-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-amber-400">
+                          Pattern Interrupt
+                        </span>
+                        <p className="mt-0.5 text-[13px] text-amber-200/90 leading-snug font-medium">
+                          {patternInterruptLine}
+                        </p>
+                        {patternInterruptError && (
+                          <p className="mt-1 text-[11px] text-red-400 leading-snug">{patternInterruptError}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleRefreshPatternInterrupt}
+                        disabled={patternInterruptLoading || loading}
+                        title="Regenerate pattern interrupt"
+                        aria-label="Regenerate pattern interrupt opener"
+                        className="shrink-0 rounded p-1 text-amber-500/60 hover:text-amber-400 hover:bg-amber-500/15 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`h-3.5 w-3.5 ${patternInterruptLoading ? 'animate-spin' : ''}`} aria-hidden="true">
+                          <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {/* Icebreaker active indicator — Email 1 only */}
                 {index === 0 && icebreakerActiveIndex !== null && icebreakers?.[icebreakerActiveIndex] && (
                   <div className="mb-2 rounded-lg border border-sky-500/40 bg-sky-500/8 px-3 py-2">
@@ -3511,7 +3696,9 @@ function App() {
                     aria-label={`${email.title} body`}
                     rows={8}
                     className={`w-full flex-1 min-h-[8rem] rounded-lg border text-slate-300 text-sm leading-relaxed px-3 py-2.5 resize-y transition-[border-color,box-shadow,background-color] duration-200 focus:outline-none focus:ring-2 ${
-                      index === 0 && icebreakerActiveIndex !== null
+                      index === 0 && patternInterruptLine
+                        ? 'border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/8 focus:border-amber-400/80 focus:bg-amber-500/10 focus:ring-amber-400/35'
+                        : index === 0 && icebreakerActiveIndex !== null
                         ? 'border-sky-500/30 bg-sky-500/5 hover:bg-sky-500/8 focus:border-sky-400/80 focus:bg-sky-500/10 focus:ring-sky-400/35'
                         : 'border-transparent bg-transparent hover:bg-slate-900/25 focus:border-sky-400/80 focus:bg-slate-900/30 focus:ring-sky-400/35'
                     }`}
