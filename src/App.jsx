@@ -691,6 +691,92 @@ function StarBookmarkIcon({ filled }) {
   )
 }
 
+async function verifyEmailWithHunter(email) {
+  const apiKey = import.meta.env.VITE_HUNTER_API_KEY
+  if (!apiKey) throw new Error('Hunter.io API key not configured — add VITE_HUNTER_API_KEY to your .env file')
+  const res = await fetch(
+    `https://api.hunter.io/v2/email-verifier?email=${encodeURIComponent(email)}&api_key=${encodeURIComponent(apiKey)}`,
+  )
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `Could not verify — check your API key (HTTP ${res.status})`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.errors?.[0]?.details) message = data.errors[0].details
+    } catch {
+      if (errBody) message += `: ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  return data.data
+}
+
+function getVerifyBadge(result) {
+  switch (result) {
+    case 'deliverable':   return { label: 'Valid',    cls: 'bg-green-500/20 text-green-300 border border-green-500/40' }
+    case 'risky':         return { label: 'Risky',    cls: 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40' }
+    case 'undeliverable': return { label: 'Invalid',  cls: 'bg-red-500/20 text-red-300 border border-red-500/40' }
+    default:              return { label: 'Unknown',  cls: 'bg-slate-500/20 text-slate-300 border border-slate-500/40' }
+  }
+}
+
+function buildVerifyExplanation(data) {
+  const flags = []
+  if (data.gibberish)             flags.push('address looks auto-generated or gibberish')
+  if (data.disposable)            flags.push('disposable / temporary email provider')
+  if (data.webmail)               flags.push('webmail provider (Gmail, Yahoo, etc.)')
+  if (data.mx_records === false)  flags.push('no MX records — domain cannot receive email')
+  if (data.smtp_server === false) flags.push('SMTP server not found')
+  if (data.smtp_check === false)  flags.push('mailbox does not exist on server')
+  if (data.block)                 flags.push('mail server blocks verification checks')
+  if (flags.length === 0) {
+    if (data.result === 'deliverable') return 'All checks passed — email appears valid and deliverable.'
+    if (data.result === 'risky')       return 'Email may be valid but could not be fully confirmed.'
+    return 'Verification inconclusive — no specific issues flagged.'
+  }
+  return `Flagged: ${flags.join('; ')}.`
+}
+
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  const rows = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    const row = []
+    let field = ''
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') { field += '"'; i++ }
+        else if (ch === '"') { inQuotes = false }
+        else { field += ch }
+      } else {
+        if (ch === '"') { inQuotes = true }
+        else if (ch === ',') { row.push(field); field = '' }
+        else { field += ch }
+      }
+    }
+    row.push(field)
+    rows.push(row)
+  }
+  return rows
+}
+
+function detectEmailColumn(headerRow) {
+  for (let i = 0; i < headerRow.length; i++) {
+    if (/email/i.test(headerRow[i])) return i
+  }
+  return 0
+}
+
+function csvEscape(val) {
+  const s = String(val ?? '')
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
 /** Gray = empty, yellow = 1–49 chars, green = 50+ chars (trimmed length). */
 function fieldFillDotClass(trimmedLength) {
   if (trimmedLength === 0) return 'bg-slate-500'
@@ -793,6 +879,18 @@ function App() {
   const [reengageTopic, setReengageTopic] = useState('')
   const [reengageLastContact, setReengageLastContact] = useState('')
   const [reengageReason, setReengageReason] = useState('')
+  const [verifyEmail, setVerifyEmail] = useState('')
+  const [verifyResult, setVerifyResult] = useState(null)
+  const [verifyLoading, setVerifyLoading] = useState(false)
+  const [verifyError, setVerifyError] = useState(null)
+  const [bulkCsvFile, setBulkCsvFile] = useState(null)
+  const [bulkProcessing, setBulkProcessing] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState(0)
+  const [bulkTotal, setBulkTotal] = useState(0)
+  const [bulkError, setBulkError] = useState(null)
+  const [bulkResultUrl, setBulkResultUrl] = useState(null)
+  const [bulkResultFilename, setBulkResultFilename] = useState('')
+  const bulkCsvInputRef = useRef(null)
   const [savedCardIds, setSavedCardIds] = useState([null, null, null])
   const [deleteConfirmId, setDeleteConfirmId] = useState(null)
   const [pendingAutoGenerate, setPendingAutoGenerate] = useState(false)
@@ -1141,6 +1239,71 @@ function App() {
     setPendingAutoGenerate(true)
   }, [])
 
+  const handleVerifySingle = useCallback(async () => {
+    const email = verifyEmail.trim()
+    if (!email) return
+    setVerifyResult(null)
+    setVerifyError(null)
+    setVerifyLoading(true)
+    try {
+      const data = await verifyEmailWithHunter(email)
+      setVerifyResult(data)
+    } catch (err) {
+      setVerifyError(err.message || 'Could not verify — check your API key')
+    } finally {
+      setVerifyLoading(false)
+    }
+  }, [verifyEmail])
+
+  const handleBulkCsv = useCallback(async () => {
+    if (!bulkCsvFile) return
+    setBulkError(null)
+    setBulkResultUrl(null)
+    setBulkResultFilename('')
+    setBulkProcessing(true)
+    setBulkProgress(0)
+    setBulkTotal(0)
+    try {
+      const text = await bulkCsvFile.text()
+      const rows = parseCSV(text)
+      if (rows.length < 2) throw new Error('CSV must have a header row and at least one data row')
+      const headerRow = rows[0]
+      const emailCol = detectEmailColumn(headerRow)
+      const dataRows = rows.slice(1)
+      setBulkTotal(dataRows.length)
+      const STATUS_KEY = 'verification_status'
+      const outputHeader = [...headerRow.map(csvEscape), csvEscape(STATUS_KEY)].join(',')
+      const outputLines = [outputHeader]
+      for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i]
+        const emailVal = (row[emailCol] || '').trim()
+        let status = 'skipped'
+        if (emailVal) {
+          try {
+            const data = await verifyEmailWithHunter(emailVal)
+            status = data.result || 'unknown'
+          } catch {
+            status = 'error'
+          }
+          // small delay between requests to respect rate limits
+          if (i < dataRows.length - 1) await new Promise((r) => window.setTimeout(r, 350))
+        }
+        outputLines.push([...row.map(csvEscape), csvEscape(status)].join(','))
+        setBulkProgress(i + 1)
+      }
+      const csvContent = outputLines.join('\n')
+      const blob = new Blob([csvContent], { type: 'text/csv' })
+      const url = URL.createObjectURL(blob)
+      const baseName = bulkCsvFile.name.replace(/\.csv$/i, '')
+      setBulkResultUrl(url)
+      setBulkResultFilename(`${baseName}-verified.csv`)
+    } catch (err) {
+      setBulkError(err.message || 'Could not process CSV')
+    } finally {
+      setBulkProcessing(false)
+    }
+  }, [bulkCsvFile])
+
   useEffect(
     () => () => {
       if (bookmarkFlashTimerRef.current) window.clearTimeout(bookmarkFlashTimerRef.current)
@@ -1377,6 +1540,17 @@ function App() {
             }`}
           >
             Re-engage
+          </button>
+          <button
+            type="button"
+            onClick={() => setAppMode('verify')}
+            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+              appMode === 'verify'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Verify
           </button>
           <button
             type="button"
@@ -2168,6 +2342,176 @@ function App() {
               </div>
             </>
           )}
+        </div>
+        )}
+
+        {appMode === 'verify' && (
+        <div className="space-y-6">
+          {/* Single email verifier */}
+          <div className="bg-slate-800/90 rounded-2xl border border-slate-700/50 p-6 sm:p-8 shadow-xl shadow-black/20">
+            <h2 className="text-2xl sm:text-3xl font-semibold text-center text-white mb-2">
+              Email Verifier
+            </h2>
+            <p className="text-center text-slate-400 text-sm mb-6 sm:mb-8">
+              Verify a single email address using Hunter.io
+            </p>
+
+            <div className="flex gap-2">
+              <input
+                type="email"
+                value={verifyEmail}
+                onChange={(e) => { setVerifyEmail(e.target.value); setVerifyResult(null); setVerifyError(null) }}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleVerifySingle() }}
+                placeholder="prospect@company.com"
+                className="flex-1 min-w-0 rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                disabled={verifyLoading}
+                aria-label="Email address to verify"
+              />
+              <button
+                type="button"
+                onClick={handleVerifySingle}
+                disabled={verifyLoading || !verifyEmail.trim()}
+                className="shrink-0 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {verifyLoading ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                    Verifying…
+                  </>
+                ) : 'Verify'}
+              </button>
+            </div>
+
+            {verifyError && (
+              <div className="mt-4 p-4 rounded-xl bg-red-900/40 border border-red-700/50 text-red-200 text-sm">
+                {verifyError}
+              </div>
+            )}
+
+            {verifyResult && (() => {
+              const badge = getVerifyBadge(verifyResult.result)
+              const explanation = buildVerifyExplanation(verifyResult)
+              return (
+                <div className="mt-5 rounded-xl border border-slate-700/50 bg-slate-700/30 p-5 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-slate-300 truncate">{verifyResult.email}</span>
+                    <span className={`shrink-0 inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${badge.cls}`}>
+                      {badge.label}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-400">{explanation}</p>
+                  {verifyResult.score !== undefined && (
+                    <p className="text-xs text-slate-500 tabular-nums">Deliverability score: {verifyResult.score}/100</p>
+                  )}
+                </div>
+              )
+            })()}
+          </div>
+
+          {/* Bulk CSV verifier */}
+          <div className="bg-slate-800/90 rounded-2xl border border-slate-700/50 p-6 sm:p-8 shadow-xl shadow-black/20">
+            <h3 className="text-xl sm:text-2xl font-semibold text-white mb-2">Bulk CSV Verification</h3>
+            <p className="text-slate-400 text-sm mb-6">
+              Upload a CSV with an <code className="text-slate-300 bg-slate-700/60 px-1.5 py-0.5 rounded text-xs">email</code> column.
+              A <code className="text-slate-300 bg-slate-700/60 px-1.5 py-0.5 rounded text-xs">verification_status</code> column will be appended to each row.
+            </p>
+
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <label
+                  htmlFor="bulk-csv-input"
+                  className={`flex-1 flex items-center gap-3 rounded-xl border-2 border-dashed px-4 py-4 cursor-pointer transition-colors ${
+                    bulkCsvFile ? 'border-blue-500/60 bg-blue-500/10' : 'border-slate-600 hover:border-slate-500 bg-slate-700/30'
+                  }`}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  <span className="text-sm text-slate-300 truncate">
+                    {bulkCsvFile ? bulkCsvFile.name : 'Choose CSV file…'}
+                  </span>
+                  <input
+                    id="bulk-csv-input"
+                    ref={bulkCsvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="sr-only"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null
+                      setBulkCsvFile(file)
+                      setBulkError(null)
+                      setBulkResultUrl(null)
+                      setBulkResultFilename('')
+                      setBulkProgress(0)
+                      setBulkTotal(0)
+                    }}
+                    disabled={bulkProcessing}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={handleBulkCsv}
+                  disabled={!bulkCsvFile || bulkProcessing}
+                  className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3.5 text-sm font-semibold text-white hover:bg-blue-500 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {bulkProcessing ? (
+                    <>
+                      <svg className="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                      </svg>
+                      Processing…
+                    </>
+                  ) : 'Run Verification'}
+                </button>
+              </div>
+
+              {bulkProcessing && bulkTotal > 0 && (
+                <div className="space-y-1.5">
+                  <div className="flex justify-between text-xs text-slate-400 tabular-nums">
+                    <span>Verifying…</span>
+                    <span>{bulkProgress} / {bulkTotal}</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-slate-700/80 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-blue-500 transition-[width] duration-300"
+                      style={{ width: `${bulkTotal > 0 ? Math.round((bulkProgress / bulkTotal) * 100) : 0}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {bulkError && (
+                <div className="p-4 rounded-xl bg-red-900/40 border border-red-700/50 text-red-200 text-sm">
+                  {bulkError}
+                </div>
+              )}
+
+              {bulkResultUrl && (
+                <div className="flex items-center gap-3 rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-3.5">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 shrink-0 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="flex-1 text-sm text-green-200 truncate">
+                    Verification complete — {bulkTotal} row{bulkTotal !== 1 ? 's' : ''} processed
+                  </span>
+                  <a
+                    href={bulkResultUrl}
+                    download={bulkResultFilename}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-green-500 transition-colors focus:outline-none focus:ring-2 focus:ring-green-500"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download CSV
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
         )}
       </main>
