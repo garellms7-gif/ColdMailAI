@@ -14,6 +14,7 @@ const CHAR_LIMIT_NAME_OFFER = 300
 const CHAR_LIMIT_TARGET_ROLE = 120
 const CHAR_LIMIT_GOAL = 200
 const CHAR_LIMIT_PAIN_POINT = 150
+const CHAR_LIMIT_COMPETITOR_TOOLS = 80
 
 const PAIN_POINT_LIBRARY = {
   SaaS:          ['Low trial conversions', 'High churn', 'Long sales cycles', 'Poor onboarding completion', 'Feature adoption gaps'],
@@ -1250,12 +1251,15 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS') {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName = '', targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS', competitorTools = '') {
   const personalizationBlock = prospectFirstName.trim()
     ? `\nPERSONALIZATION (Email 1 only): Use the literal token {{firstName}} wherever you include the prospect's first name in Email 1's opening greeting and in the subject_short field. Do not write the actual name — write {{firstName}} exactly so it can be dynamically replaced. Example opening: "Hi {{firstName}}," — example subject: "Quick question for {{firstName}} at [Company]". Do NOT use {{firstName}} in Email 2 or Email 3.`
     : ''
   const painPointBlock = painPoint.trim()
     ? `\nPROSPECT PAIN POINT: ${painPoint.trim()}\nLead with or address this specific challenge naturally in all three emails — it should feel like you understand their exact situation.`
+    : ''
+  const competitorBlock = competitorTools.trim()
+    ? `\nTOOLS THEY LIKELY USE: ${competitorTools.trim()}\nIn Email 1 ONLY, weave in a natural, specific reference to one of these tools to signal that you've done research on their stack. Examples: "Since you're already using HubSpot...", "I noticed most teams using Apollo also struggle with...", "This works alongside Instantly, not instead of it...". Keep it to one brief mention — don't dwell on it or make it the focus. Do NOT reference these tools in Email 2 or Email 3.`
     : ''
   const fw = EMAIL_FRAMEWORKS.find((f) => f.value === framework) ?? EMAIL_FRAMEWORKS[0]
   const frameworkBlock = `\nEMAIL FRAMEWORK (${fw.label} — ${fw.description}): ${fw.promptInstruction}`
@@ -1268,7 +1272,7 @@ TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
 Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
-TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${painPointBlock}${personalizationBlock}${frameworkBlock}
+TARGET WORD COUNT: Aim for approximately ${targetWordCount} words per email body (sign-off included; ±10 words is fine). Do not pad with filler to hit the number — stay tight and purposeful.${painPointBlock}${competitorBlock}${personalizationBlock}${frameworkBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -1284,7 +1288,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS') {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, prospectFirstName = '', voiceProfile = null, targetWordCount = LENGTH_SLIDER_DEFAULT, painPoint = '', framework = 'PAS', competitorTools = '') {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1299,7 +1303,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
       max_tokens: 1800,
       system: buildSystemPromptWithTone(toneLabel, voiceProfile),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount, painPoint, framework) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, prospectFirstName, targetWordCount, painPoint, framework, competitorTools) },
       ],
     }),
   })
@@ -1813,6 +1817,8 @@ function App() {
   const [aiPainPoints, setAiPainPoints] = useState([])
   const [aiPainPointsLoading, setAiPainPointsLoading] = useState(false)
   const [aiPainPointsError, setAiPainPointsError] = useState(null)
+  const [competitorTools, setCompetitorTools] = useState('')
+  const [appliedCompetitorTools, setAppliedCompetitorTools] = useState('')
 
   const [psLines, setPsLines] = useState(() => ({ 0: null, 2: null }))
   const [psLoading, setPsLoading] = useState(() => ({ 0: false, 2: false }))
@@ -2043,6 +2049,8 @@ function App() {
     setAiPainPoints([])
     setAiPainPointsError(null)
     setAiPainPointsLoading(false)
+    setCompetitorTools('')
+    setAppliedCompetitorTools('')
     setDripEmails(null)
     setDripError(null)
     setDripLoading(false)
@@ -2141,10 +2149,12 @@ function App() {
       if (appMode === 'reengage') {
         result = await generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, tone, industry, voiceProfile, targetLength)
         setAppliedFramework(null)
+        setAppliedCompetitorTools('')
       } else {
         const firstName = personalizeEnabled ? prospectFirstName.trim() : ''
-        result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint, framework)
+        result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, firstName, voiceProfile, targetLength, painPoint, framework, competitorTools)
         setAppliedFramework(framework)
+        setAppliedCompetitorTools(competitorTools.trim())
       }
       setEmails(result)
       if (!unlocked) {
@@ -3120,6 +3130,29 @@ function App() {
               </div>
             </div>
 
+            <div>
+              <label htmlFor="competitor-tools" className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2">
+                Tools They Likely Use
+                <span className="text-[10px] font-normal text-slate-500 rounded-full border border-slate-600 px-1.5 py-0.5">optional</span>
+              </label>
+              <input
+                id="competitor-tools"
+                type="text"
+                value={competitorTools}
+                onChange={(e) => setCompetitorTools(e.target.value)}
+                placeholder="e.g. HubSpot, Apollo, Instantly…"
+                maxLength={CHAR_LIMIT_COMPETITOR_TOOLS}
+                disabled={loading}
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+              />
+              <div className="mt-1 flex items-center justify-between">
+                <span className="text-xs text-slate-500 italic">Weaves a stack reference into Email 1 to signal research</span>
+                <span className={`text-xs tabular-nums ${competitorTools.length > CHAR_LIMIT_COMPETITOR_TOOLS - 10 ? 'text-red-400' : 'text-slate-500'}`}>
+                  {competitorTools.length}/{CHAR_LIMIT_COMPETITOR_TOOLS}
+                </span>
+              </div>
+            </div>
+
             <div
               className="pt-4 border-t border-slate-700/50"
               role="status"
@@ -3568,14 +3601,29 @@ function App() {
                     <StarBookmarkIcon filled={bookmarkFlashIndex === index} />
                   </button>
                 </div>
-                {appliedFramework && showGeneratedResults && (
-                  <div className="mb-3">
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full border border-indigo-500/40 bg-indigo-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-300"
-                      title={EMAIL_FRAMEWORKS.find((f) => f.value === appliedFramework)?.tooltip ?? ''}
-                    >
-                      {appliedFramework}
-                    </span>
+                {(appliedFramework || (appliedCompetitorTools && index === 0)) && showGeneratedResults && (
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    {appliedFramework && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-indigo-500/40 bg-indigo-900/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-300"
+                        title={EMAIL_FRAMEWORKS.find((f) => f.value === appliedFramework)?.tooltip ?? ''}
+                      >
+                        {appliedFramework}
+                      </span>
+                    )}
+                    {appliedCompetitorTools && index === 0 && (
+                      <span
+                        className="group relative inline-flex items-center gap-1 rounded-full border border-teal-500/40 bg-teal-900/25 px-2 py-0.5 text-[10px] font-semibold text-teal-300 cursor-default"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3 w-3 shrink-0" aria-hidden="true">
+                          <path d="M9.965 11.026a5 5 0 1 1 1.06-1.06l2.755 2.754a.75.75 0 1 1-1.06 1.06l-2.755-2.754ZM10.5 7a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" clipRule="evenodd" fillRule="evenodd" />
+                        </svg>
+                        Research Signal Active
+                        <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-[11px] font-normal text-slate-300 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-20 text-center normal-case leading-snug">
+                          Mentioning tools they use signals research and increases reply rates.
+                        </span>
+                      </span>
+                    )}
                   </div>
                 )}
                 <div className="mb-4 rounded-lg border border-amber-400/55 bg-amber-50 px-3 py-2 shadow-sm">
