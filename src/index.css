@@ -19,3 +19,83 @@ body {
 .animate-fade-in {
   animation: fade-in 0.4s ease-out forwards;
 }
+
+/* ── Theme transition (base layer so Tailwind utilities can still override) ── */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease;
+  }
+}
+
+/* ── Light mode overrides ──────────────────────────────────────────────────
+   These rules are OUTSIDE any @layer, so they naturally win over Tailwind's
+   @layer utilities without needing !important.
+   Active when <html class="light"> is set.
+───────────────────────────────────────────────────────────────────────────── */
+
+html.light {
+  color-scheme: light;
+}
+
+/* Page background */
+html.light .bg-slate-900      { background-color: #f1f5f9; }
+html.light .bg-slate-900\/95  { background-color: rgba(241,245,249,0.97); }
+
+/* Card / surface backgrounds */
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light .bg-slate-800\/70,
+html.light .bg-slate-800\/60,
+html.light .bg-slate-800\/40  { background-color: #ffffff; }
+html.light .bg-slate-800      { background-color: #f8fafc; }
+
+/* Input & muted surfaces */
+html.light .bg-slate-700\/80,
+html.light .bg-slate-700\/70,
+html.light .bg-slate-700\/60  { background-color: #e2e8f0; }
+html.light .bg-slate-700\/50  { background-color: #f1f5f9; }
+html.light .bg-slate-700\/40  { background-color: #f1f5f9; }
+html.light .bg-slate-700      { background-color: #e2e8f0; }
+html.light .bg-slate-600      { background-color: #cbd5e1; }
+
+/* Textarea / contenteditable hover + focus state overlays */
+html.light .hover\:bg-slate-900\/25:hover { background-color: #f1f5f9; }
+html.light .focus\:bg-slate-900\/30:focus  { background-color: #e8edf5; }
+
+/* Hover / focus backgrounds on interactive surfaces */
+html.light .hover\:bg-slate-800\/60:hover  { background-color: #f1f5f9; }
+html.light .hover\:bg-slate-700\/80:hover,
+html.light .hover\:bg-slate-700\/70:hover,
+html.light .hover\:bg-slate-700\/60:hover,
+html.light .hover\:bg-slate-700\/50:hover  { background-color: #e2e8f0; }
+html.light .hover\:bg-slate-700:hover      { background-color: #cbd5e1; }
+html.light .hover\:bg-slate-600:hover      { background-color: #94a3b8; }
+html.light .hover\:bg-slate-50:hover       { background-color: #f8fafc; }
+html.light .disabled\:bg-slate-600         { background-color: #e2e8f0; }
+
+/* Text colors */
+html.light .text-white         { color: #0f172a; }
+html.light .text-slate-100     { color: #1e293b; }
+html.light .text-slate-200     { color: #334155; }
+html.light .text-slate-300     { color: #475569; }
+html.light .text-slate-400     { color: #64748b; }
+html.light .text-slate-500     { color: #94a3b8; }
+
+/* Hover text */
+html.light .hover\:text-white:hover      { color: #0f172a; }
+html.light .hover\:text-slate-200:hover  { color: #334155; }
+
+/* Placeholder text */
+html.light .placeholder-slate-400::placeholder { color: #94a3b8; }
+
+/* Border colors */
+html.light .border-slate-700\/50  { border-color: rgba(203,213,225,0.6); }
+html.light .border-slate-700\/60  { border-color: rgba(203,213,225,0.7); }
+html.light .border-slate-700\/80  { border-color: rgba(203,213,225,0.9); }
+html.light .border-slate-700      { border-color: #cbd5e1; }
+html.light .border-slate-600      { border-color: #94a3b8; }
+html.light .border-slate-500\/80  { border-color: rgba(148,163,184,0.6); }
+html.light .border-slate-500\/70  { border-color: rgba(148,163,184,0.5); }
+html.light .border-slate-500      { border-color: #94a3b8; }

@@ -6,6 +6,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Generate personalized cold emails in seconds using AI." />
     <title>ColdMailAI - AI Cold Email Generator</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('coldmailai_theme')
+          var preferLight = window.matchMedia('(prefers-color-scheme: light)').matches
+          var theme = stored === 'light' || stored === 'dark' ? stored : (preferLight ? 'light' : 'dark')
+          if (theme === 'light') document.documentElement.classList.add('light')
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

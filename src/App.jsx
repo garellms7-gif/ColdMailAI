@@ -697,6 +697,15 @@ function App() {
   const [variantsError, setVariantsError] = useState(null)
   const [variantsExpanded, setVariantsExpanded] = useState(true)
   const [variantCopiedIndex, setVariantCopiedIndex] = useState(null)
+  const [theme, setTheme] = useState(() => {
+    try {
+      const stored = localStorage.getItem('coldmailai_theme')
+      if (stored === 'light' || stored === 'dark') return stored
+      return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    } catch {
+      return 'dark'
+    }
+  })
   const [appMode, setAppMode] = useState('generate')
   const [savedCardIds, setSavedCardIds] = useState([null, null, null])
   const [deleteConfirmId, setDeleteConfirmId] = useState(null)
@@ -1111,6 +1120,24 @@ function App() {
     setExampleMenuOpen(false)
   }, [])
 
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'light') {
+      root.classList.add('light')
+    } else {
+      root.classList.remove('light')
+    }
+    try {
+      localStorage.setItem('coldmailai_theme', theme)
+    } catch {
+      // ignore storage errors
+    }
+  }, [theme])
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))
+  }, [])
+
   const dismissPaywallModal = useCallback(() => {
     setLimitModalDismissedStored(true)
     setLimitModalDismissed(true)
@@ -1143,6 +1170,26 @@ function App() {
             </h1>
           </div>
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-600 bg-slate-800/80 p-2 text-slate-300 hover:bg-slate-700/80 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+              aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+              title={theme === 'light' ? 'Dark mode' : 'Light mode'}
+            >
+              {theme === 'light' ? (
+                /* Moon — click to go dark */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+              ) : (
+                /* Sun — click to go light */
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <circle cx="12" cy="12" r="4" />
+                  <path strokeLinecap="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+                </svg>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setAppMode('saved')}
