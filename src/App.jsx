@@ -494,6 +494,13 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
 
 const SHORT_VARIANT_SYSTEM_APPEND = `VARIANT TASK: Output only three alternative SHORT cold emails (first-touch length, comparable to a "short email" in a sequence). Each variant must use a completely different opening angle and hook from the others—no recycled sentences or parallel structure across variants. Obey all sender sign-off and person-vs-product rules from the main instructions above.`
 
+const REENGAGE_EMAIL_CARDS = [
+  { key: 'curiosity_bump', title: 'Curiosity Bump' },
+  { key: 'value_update', title: 'Value Update' },
+  { key: 'easy_out', title: 'Easy Out' },
+]
+const REENGAGE_SUBJECT_KEYS = ['curiosity_bump_subject', 'value_update_subject', 'easy_out_subject']
+
 const SHORT_VARIANT_SLOTS = [
   {
     angleLabel: 'Question opener',
@@ -591,6 +598,80 @@ async function generateShortEmailVariants(nameAndOffer, targetAndRole, goal, ton
   const text = content[0].text
   const parsed = parseEmailJson(text)
   return parseShortVariantsFromResponse(parsed)
+}
+
+async function generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, toneLabel, industry) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const first = senderName.split(/\s+/)[0] || senderName
+  const userMessage = `Generate 3 re-engagement cold emails for the following situation:
+
+SENDER'S PERSONAL NAME (sign off with first name only): ${senderName}
+SENDER'S PRODUCT OR SERVICE: ${senderOffer}
+PROSPECT NAME: ${reengageName}
+PROSPECT COMPANY: ${reengageCompany}
+ORIGINAL OUTREACH TOPIC: ${reengageTopic}
+HOW LONG AGO LAST CONTACT: ${reengageLastContact || 'a while ago'}
+WHY REACHING BACK OUT: ${reengageReason || 'checking in'}
+INDUSTRY CONTEXT: ${industry}
+
+Generate three distinct re-engagement email styles:
+
+EMAIL 1 — CURIOSITY BUMP: A short, intriguing follow-up that sparks curiosity. Reference the previous conversation naturally. Keep it brief and open-ended to invite a reply.
+
+EMAIL 2 — VALUE UPDATE: Provide a new piece of value, insight, or update relevant to their situation since the last conversation. Make it genuinely useful, not just a check-in.
+
+EMAIL 3 — EASY OUT: Give them an easy way to say no or close the loop, but frame it in a way that makes replying feel low-effort. Sometimes this honesty gets a reply.
+
+Return ONLY a JSON object with these keys (all string values, no markdown):
+- curiosity_bump_subject, curiosity_bump (body)
+- value_update_subject, value_update (body)
+- easy_out_subject, easy_out (body)
+Every email must sign off with only the sender's first name (e.g. "Best," then "${first}" on the next line).`
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 1500,
+      system: buildSystemPromptWithTone(toneLabel),
+      messages: [{ role: 'user', content: userMessage }],
+    }),
+  })
+
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') {
+    throw new Error('Invalid response format from API')
+  }
+  const text = content[0].text
+  const parsed = parseEmailJson(text)
+
+  return REENGAGE_EMAIL_CARDS.map(({ key, title }, i) => {
+    const subjectKey = REENGAGE_SUBJECT_KEYS[i]
+    return {
+      title,
+      subject: typeof parsed[subjectKey] === 'string' ? parsed[subjectKey] : '',
+      body: typeof parsed[key] === 'string' ? parsed[key] : '',
+    }
+  })
 }
 
 function StarBookmarkIcon({ filled }) {
@@ -707,6 +788,11 @@ function App() {
     }
   })
   const [appMode, setAppMode] = useState('generate')
+  const [reengageName, setReengageName] = useState('')
+  const [reengageCompany, setReengageCompany] = useState('')
+  const [reengageTopic, setReengageTopic] = useState('')
+  const [reengageLastContact, setReengageLastContact] = useState('')
+  const [reengageReason, setReengageReason] = useState('')
   const [savedCardIds, setSavedCardIds] = useState([null, null, null])
   const [deleteConfirmId, setDeleteConfirmId] = useState(null)
   const [pendingAutoGenerate, setPendingAutoGenerate] = useState(false)
@@ -726,10 +812,17 @@ function App() {
   const atFreeLimit = !unlocked && usageCount >= FREE_GENERATIONS_LIMIT
   const showPersistentLimitBanner = atFreeLimit && limitModalDismissed && !showUpgradeModal
   const blurContentForPaywall = showUpgradeModal && !unlocked
-  const allFilled = nameAndOffer.trim() !== '' && targetAndRole.trim() !== '' && goal.trim() !== ''
-  const formFilledCount = [nameAndOffer, targetAndRole, goal].filter((s) => s.trim().length > 0).length
+  const reengageAllFilled =
+    nameAndOffer.trim() !== '' &&
+    reengageName.trim() !== '' &&
+    reengageCompany.trim() !== '' &&
+    reengageTopic.trim() !== ''
+  const allFilled = appMode === 'reengage' ? reengageAllFilled : (nameAndOffer.trim() !== '' && targetAndRole.trim() !== '' && goal.trim() !== '')
+  const formFilledCount = appMode === 'reengage'
+    ? Math.min(3, [nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason].filter((s) => s.trim().length > 0).length)
+    : [nameAndOffer, targetAndRole, goal].filter((s) => s.trim().length > 0).length
   const formProgressPct = FORM_PROGRESS_BY_FILLED[formFilledCount]
-  const formReady = formFilledCount === 3
+  const formReady = appMode === 'reengage' ? reengageAllFilled : formFilledCount === 3
   const canGenerate = allFilled && !loading && (unlocked || usageRemaining > 0)
 
   const displayEmails = emails ?? PLACEHOLDER_EMAILS
@@ -798,6 +891,11 @@ function App() {
     setGoal('Book a Call')
     setIndustry('Other')
     setTone('Conversational')
+    setReengageName('')
+    setReengageCompany('')
+    setReengageTopic('')
+    setReengageLastContact('')
+    setReengageReason('')
     setEmails(null)
     setError(null)
     setCopiedIndex(null)
@@ -851,7 +949,9 @@ function App() {
     setVariantsError(null)
     setVariantCopiedIndex(null)
     try {
-      const result = await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry)
+      const result = appMode === 'reengage'
+        ? await generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, tone, industry)
+        : await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry)
       setEmails(result)
       if (!unlocked) {
         const newCount = usageCount + 1
@@ -1278,7 +1378,18 @@ function App() {
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            Cold Email Generator
+            Cold Email
+          </button>
+          <button
+            type="button"
+            onClick={() => setAppMode('reengage')}
+            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+              appMode === 'reengage'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Re-engage
           </button>
           <button
             type="button"
@@ -1300,14 +1411,15 @@ function App() {
           </button>
         </div>
 
-        {appMode === 'generate' && (
+        {(appMode === 'generate' || appMode === 'reengage') && (
         <>
         {/* Main card */}
         <div className="bg-slate-800/90 rounded-2xl border border-slate-700/50 p-6 sm:p-8 shadow-xl shadow-black/20">
           <h2 className="text-2xl sm:text-3xl font-semibold text-center text-white mb-3 sm:mb-4">
-            AI Cold Email Generator
+            {appMode === 'reengage' ? 'Re-engage Email Generator' : 'AI Cold Email Generator'}
           </h2>
 
+          {appMode === 'generate' && (
           <div className="flex justify-center mb-6 sm:mb-8">
             <div className="relative" ref={exampleMenuRef}>
               <button
@@ -1356,6 +1468,7 @@ function App() {
               )}
             </div>
           </div>
+          )}
 
           <div className="space-y-5 sm:space-y-6">
             <div>
@@ -1385,6 +1498,8 @@ function App() {
               />
             </div>
 
+            {appMode === 'generate' && (
+            <>
             <div>
               <label
                 htmlFor="target-role"
@@ -1436,6 +1551,124 @@ function App() {
                 hintMinLength={15}
               />
             </div>
+            </>
+            )}
+
+            {appMode === 'reengage' && (
+            <>
+            <div>
+              <label
+                htmlFor="reengage-name"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageName.trim().length)}`}
+                  aria-hidden="true"
+                />
+                Prospect Name
+              </label>
+              <input
+                id="reengage-name"
+                type="text"
+                value={reengageName}
+                onChange={(e) => setReengageName(e.target.value)}
+                placeholder="e.g. Sarah Johnson"
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="reengage-company"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageCompany.trim().length)}`}
+                  aria-hidden="true"
+                />
+                Company
+              </label>
+              <input
+                id="reengage-company"
+                type="text"
+                value={reengageCompany}
+                onChange={(e) => setReengageCompany(e.target.value)}
+                placeholder="e.g. Acme Corp"
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="reengage-topic"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageTopic.trim().length)}`}
+                  aria-hidden="true"
+                />
+                Original Outreach Topic
+              </label>
+              <textarea
+                id="reengage-topic"
+                value={reengageTopic}
+                onChange={(e) => setReengageTopic(e.target.value)}
+                placeholder="e.g. Discussed automating their outbound sales process"
+                rows={2}
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow resize-y min-h-[4rem] disabled:opacity-60"
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="reengage-last-contact"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageLastContact.trim().length)}`}
+                  aria-hidden="true"
+                />
+                How Long Ago Did You Last Contact Them?
+                <span className="text-slate-500 font-normal">(optional)</span>
+              </label>
+              <input
+                id="reengage-last-contact"
+                type="text"
+                value={reengageLastContact}
+                onChange={(e) => setReengageLastContact(e.target.value)}
+                placeholder="e.g. 3 months ago, last quarter"
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow disabled:opacity-60"
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="reengage-reason"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 mb-2"
+              >
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${fieldFillDotClass(reengageReason.trim().length)}`}
+                  aria-hidden="true"
+                />
+                Why Are You Reaching Back Out Now?
+                <span className="text-slate-500 font-normal">(optional)</span>
+              </label>
+              <textarea
+                id="reengage-reason"
+                value={reengageReason}
+                onChange={(e) => setReengageReason(e.target.value)}
+                placeholder="e.g. They just raised a Series B, new product launch, end of quarter push"
+                rows={2}
+                className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white placeholder-slate-400 px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow resize-y min-h-[4rem] disabled:opacity-60"
+                disabled={loading}
+              />
+            </div>
+            </>
+            )}
 
             <div
               className="pt-4 border-t border-slate-700/50"
@@ -1457,7 +1690,7 @@ function App() {
                 ) : (
                   <span className="text-slate-500">
                     {formFilledCount === 0
-                      ? 'Fill all three fields above to continue'
+                      ? appMode === 'reengage' ? 'Fill the required fields above to continue' : 'Fill all three fields above to continue'
                       : `${formFilledCount} of 3 fields started`}
                   </span>
                 )}
