@@ -1634,16 +1634,6 @@ function App() {
     return arr
   }, [savedEmails, savedSortNewestFirst])
 
-  const emailScores = useMemo(() => {
-    if (!showGeneratedResults) return [null, null, null]
-    return [0, 1, 2].map((i) => {
-      const body = emailCardBodies[i] ?? ''
-      if (!body.trim()) return null
-      const ps = PS_EMAIL_INDICES.includes(i) ? (psLines[i] ?? '') : ''
-      return computeReplyScore(body, ps)
-    })
-  }, [emailCardBodies, psLines, showGeneratedResults])
-
   const usageRemaining = Math.max(0, FREE_GENERATIONS_LIMIT - usageCount)
   const atFreeLimit = !unlocked && usageCount >= FREE_GENERATIONS_LIMIT
   const showPersistentLimitBanner = atFreeLimit && limitModalDismissed && !showUpgradeModal
@@ -1691,6 +1681,17 @@ function App() {
   const [psLines, setPsLines] = useState(() => ({ 0: null, 2: null }))
   const [psLoading, setPsLoading] = useState(() => ({ 0: false, 2: false }))
   const [psStyles, setPsStyles] = useState(() => ({ 0: 'urgency', 2: 'social_proof' }))
+
+  // emailScores depends on psLines — must be declared AFTER psLines useState
+  const emailScores = useMemo(() => {
+    if (!showGeneratedResults) return [null, null, null]
+    return [0, 1, 2].map((i) => {
+      const body = emailCardBodies[i] ?? ''
+      if (!body.trim()) return null
+      const ps = PS_EMAIL_INDICES.includes(i) ? (psLines[i] ?? '') : ''
+      return computeReplyScore(body, ps)
+    })
+  }, [emailCardBodies, psLines, showGeneratedResults])
 
   const [targetLength, setTargetLength] = useState(LENGTH_SLIDER_DEFAULT)
   const [cardTargetLengths, setCardTargetLengths] = useState(() => [LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT, LENGTH_SLIDER_DEFAULT])
