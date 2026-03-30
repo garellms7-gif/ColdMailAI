@@ -1290,19 +1290,6 @@ function App() {
                 </svg>
               )}
             </button>
-            <button
-              type="button"
-              onClick={() => setAppMode('saved')}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800/80 px-2.5 py-1.5 sm:px-3 sm:py-2 text-sm font-medium text-slate-200 hover:bg-slate-700/80 hover:text-white transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <StarBookmarkIcon filled={savedEmails.length > 0} />
-              <span className="hidden sm:inline">Saved</span>
-              {savedEmails.length > 0 && (
-                <span className="tabular-nums rounded-full bg-blue-600/90 px-1.5 py-0.5 text-[11px] font-semibold text-white min-w-[1.25rem] text-center">
-                  {savedEmails.length}
-                </span>
-              )}
-            </button>
             {!unlocked && (
               <div className="flex flex-col items-end gap-0.5 sm:flex-row sm:items-center sm:gap-2">
                 {usageCount === 0 ? (
