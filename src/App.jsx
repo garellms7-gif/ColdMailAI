@@ -664,6 +664,63 @@ Rules:
   return content[0].text.trim()
 }
 
+async function simplifyEmailToGrade5(emailBody, toneLabel, nameAndOffer, targetAndRole, goal, voiceProfile = null) {
+  const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
+  const firstName = senderName.split(/\s+/)[0] || senderName
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-5',
+      max_tokens: 700,
+      system: buildSystemPromptWithTone(toneLabel, voiceProfile),
+      messages: [
+        {
+          role: 'user',
+          content: `Rewrite the cold email below to a Flesch-Kincaid grade 5 reading level. Shorter sentences, simpler words, same message.
+
+SENDER: ${senderName}
+PRODUCT/SERVICE: ${senderOffer}
+TARGET: ${targetAndRole}
+GOAL: ${goal}
+
+ORIGINAL EMAIL:
+---
+${emailBody}
+---
+
+Rules:
+- Target Flesch-Kincaid grade 4–5 (short sentences, common words, no jargon)
+- Preserve the core offer, tone, CTA, and sign-off "Best,\\n${firstName}"
+- Keep approximately the same word count (±15 words)
+- Do NOT change the meaning, omit the offer, or remove the CTA
+- Return ONLY the rewritten email body — no subject line, no labels, no markdown, no commentary`,
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const errBody = await res.text()
+    let message = `API error: ${res.status} ${res.statusText}`
+    try {
+      const data = JSON.parse(errBody)
+      if (data.error?.message) message = data.error.message
+    } catch {
+      if (errBody) message += ` — ${errBody.slice(0, 200)}`
+    }
+    throw new Error(message)
+  }
+  const data = await res.json()
+  const content = data.content
+  if (!content?.length || content[0].type !== 'text') throw new Error('Invalid response format from API')
+  return content[0].text.trim()
+}
+
 async function generateAiPainPoints(targetAndRole, industry) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -1622,6 +1679,11 @@ function App() {
   const [email1VariantsLoading, setEmail1VariantsLoading] = useState(false)
   const [email1VariantsError, setEmail1VariantsError] = useState(null)
   const [email1ActiveVariantTab, setEmail1ActiveVariantTab] = useState(0) // 0=Original, 1=Curiosity, 2=Stat, 3=Observation
+  // Reading level simplifier state
+  const [simplifyLoading, setSimplifyLoading] = useState(() => [false, false, false])
+  const [simplifyError, setSimplifyError] = useState(() => [null, null, null])
+  const [simplifyWordCountBefore, setSimplifyWordCountBefore] = useState(() => [null, null, null])
+  const [simplifyWordCountAfter, setSimplifyWordCountAfter] = useState(() => [null, null, null])
   const [inboxPreviewIndex, setInboxPreviewIndex] = useState(null)
   const [inboxPreviewCopied, setInboxPreviewCopied] = useState(false)
   const inboxPreviewCopyTimerRef = useRef(null)
@@ -1916,6 +1978,10 @@ function App() {
     setReplyTemplateCopied(null)
     setReplyTemplateRegenLoading({})
     setReplyTemplateRegenError({})
+    setSimplifyLoading([false, false, false])
+    setSimplifyError([null, null, null])
+    setSimplifyWordCountBefore([null, null, null])
+    setSimplifyWordCountAfter([null, null, null])
   }
 
   const handleResultsSectionTransitionEnd = (e) => {
@@ -2188,6 +2254,25 @@ function App() {
     setEmail1Variants(null)
     setEmail1ActiveVariantTab(0)
   }, [])
+
+  const handleSimplifyEmail = useCallback(async (index) => {
+    const body = emailCardBodies[index] ?? ''
+    if (!body.trim()) return
+    const wcBefore = countWords(body)
+    setSimplifyError((prev) => { const next = [...prev]; next[index] = null; return next })
+    setSimplifyLoading((prev) => { const next = [...prev]; next[index] = true; return next })
+    setSimplifyWordCountBefore((prev) => { const next = [...prev]; next[index] = wcBefore; return next })
+    setSimplifyWordCountAfter((prev) => { const next = [...prev]; next[index] = null; return next })
+    try {
+      const simplified = await simplifyEmailToGrade5(body, tone, nameAndOffer, targetAndRole, goal, voiceProfile)
+      setEmailCardBodies((prev) => { const next = [...prev]; next[index] = simplified; return next })
+      setSimplifyWordCountAfter((prev) => { const next = [...prev]; next[index] = countWords(simplified); return next })
+    } catch (err) {
+      setSimplifyError((prev) => { const next = [...prev]; next[index] = err.message || 'Simplification failed.'; return next })
+    } finally {
+      setSimplifyLoading((prev) => { const next = [...prev]; next[index] = false; return next })
+    }
+  }, [emailCardBodies, tone, nameAndOffer, targetAndRole, goal, voiceProfile])
 
   const handleShareLinkCopy = useCallback(() => {
     navigator.clipboard.writeText('https://garell.gumroad.com/l/cfjno')
@@ -3570,6 +3655,58 @@ function App() {
                     </div>
                   </div>
                 )}
+                {/* Reading Level badge + Simplify */}
+                {showGeneratedResults && (() => {
+                  const body = emailCardBodies[index] ?? ''
+                  if (!body.trim()) return null
+                  const grade = fleschKincaidGrade(body)
+                  const gradeRounded = Math.round(grade * 10) / 10
+                  const gradeInt = Math.round(grade)
+                  const isGreen = grade <= 6
+                  const isYellow = grade > 6 && grade < 10
+                  const isRed = grade >= 10
+                  const colorClasses = isGreen
+                    ? 'border-green-500/40 bg-green-900/15 text-green-400'
+                    : isYellow
+                    ? 'border-yellow-500/40 bg-yellow-900/15 text-yellow-400'
+                    : 'border-red-500/40 bg-red-900/15 text-red-400'
+                  const label = isGreen ? 'Optimal' : isYellow ? 'Acceptable' : 'Too Complex'
+                  return (
+                    <div className="mb-3">
+                      <div className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 ${colorClasses}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold tracking-wide">Reading Level</span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold border ${colorClasses}`}>
+                            {label}
+                          </span>
+                        </div>
+                        <span className="text-sm font-bold tabular-nums">
+                          Grade {gradeRounded}
+                        </span>
+                      </div>
+                      {gradeInt >= 7 && (
+                        <div className="mt-1.5">
+                          {simplifyError[index] && (
+                            <p className="text-[11px] text-red-400 mb-1 leading-snug">{simplifyError[index]}</p>
+                          )}
+                          {simplifyWordCountBefore[index] !== null && simplifyWordCountAfter[index] !== null && !simplifyLoading[index] && (
+                            <p className="text-[11px] text-slate-500 mb-1 tabular-nums">
+                              {simplifyWordCountBefore[index]} words → <span className="text-slate-300 font-medium">{simplifyWordCountAfter[index]} words</span>
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleSimplifyEmail(index)}
+                            disabled={simplifyLoading[index] || loading}
+                            className="w-full py-2 rounded-lg border border-emerald-500/50 bg-emerald-900/15 text-emerald-300 text-xs font-semibold hover:bg-emerald-900/30 hover:text-emerald-200 transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {simplifyLoading[index] ? 'Simplifying…' : 'Simplify to Grade 5'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
                 <button
                   type="button"
                   onClick={() => setInboxPreviewIndex(index)}
