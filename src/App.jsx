@@ -433,8 +433,14 @@ Every email must sign off with only the sender's first name (e.g. "Best," then "
 
 function parseEmailJson(raw) {
   let str = raw.trim()
-  const jsonMatch = str.match(/```(?:json)?\s*([\s\S]*?)```/)
-  if (jsonMatch) str = jsonMatch[1].trim()
+  // Strip markdown code fences
+  const fenceMatch = str.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fenceMatch) str = fenceMatch[1].trim()
+  // Extract the first {...} block in case the model added surrounding prose
+  const objectMatch = str.match(/\{[\s\S]*\}/)
+  if (objectMatch) str = objectMatch[0]
+  // Remove trailing commas before } or ] — a common model formatting mistake
+  str = str.replace(/,(\s*[}\]])/g, '$1')
   return JSON.parse(str)
 }
 
@@ -596,7 +602,13 @@ async function generateShortEmailVariants(nameAndOffer, targetAndRole, goal, ton
     throw new Error('Invalid response format from API')
   }
   const text = content[0].text
-  const parsed = parseEmailJson(text)
+  let parsed
+  try {
+    parsed = parseEmailJson(text)
+  } catch {
+    // Model returned malformed JSON — return empty list so the UI stays silent
+    return []
+  }
   return parseShortVariantsFromResponse(parsed)
 }
 
@@ -2158,7 +2170,7 @@ function App() {
                 </p>
                 {variantsError && (
                   <div className="mb-4 p-3 rounded-lg bg-red-900/35 border border-red-700/40 text-red-200 text-sm" role="alert">
-                    {variantsError}
+                    Couldn&apos;t generate variant emails. Try regenerating.
                   </div>
                 )}
                 {variantsLoading && (
