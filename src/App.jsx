@@ -202,6 +202,31 @@ const TONE_OPTIONS = [
   },
 ]
 
+/** Email copywriting frameworks */
+const EMAIL_FRAMEWORKS = [
+  {
+    value: 'PAS',
+    label: 'PAS',
+    description: 'Problem, Agitation, Solution',
+    tooltip: 'Open with the prospect\'s pain, agitate it by describing the consequence, then present your offer as the solution.',
+    promptInstruction: 'Structure each email using the PAS framework: (1) Problem — open by naming the prospect\'s specific pain point directly; (2) Agitation — deepen the pain by describing the downstream consequence or cost of not fixing it; (3) Solution — introduce your offer as the clear fix. The three sections should feel like a natural narrative arc, not labeled blocks.',
+  },
+  {
+    value: 'AIDA',
+    label: 'AIDA',
+    description: 'Attention, Interest, Desire, Action',
+    tooltip: 'Hook with a bold statement, build interest with context, create desire with the outcome, close with a CTA.',
+    promptInstruction: 'Structure each email using the AIDA framework: (1) Attention — open with a bold, unexpected, or provocative statement that stops them mid-scroll; (2) Interest — provide relevant context or a surprising insight that earns continued reading; (3) Desire — paint a specific, vivid picture of the outcome they\'ll get; (4) Action — close with one clear, low-friction CTA. Keep each section tight.',
+  },
+  {
+    value: 'BAB',
+    label: 'BAB',
+    description: 'Before, After, Bridge',
+    tooltip: 'Describe their current situation, paint the picture of life after your solution, then bridge the gap with your offer.',
+    promptInstruction: 'Structure each email using the BAB framework: (1) Before — describe their current frustrating reality in concrete terms the prospect will instantly recognise; (2) After — paint a vivid, specific picture of what their world looks like once the problem is solved; (3) Bridge — present your offer as the direct path from Before to After. Make the contrast between Before and After feel stark and desirable.',
+  },
+]
+
 const EMAIL_CARD_KEYS = [
   { key: 'short_email', title: 'Short Email' },
   { key: 'personalized_email', title: 'Personalized Email' },
@@ -413,7 +438,9 @@ function parseNameAndOffer(input) {
   }
 }
 
-function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry) {
+function buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, framework = 'PAS') {
+  const fw = EMAIL_FRAMEWORKS.find((f) => f.value === framework) ?? EMAIL_FRAMEWORKS[0]
+  const frameworkBlock = `\nEMAIL FRAMEWORK (${fw.label} — ${fw.description}): ${fw.promptInstruction}`
   return `Generate 3 cold emails for the following situation:
 
 SENDER'S PERSONAL NAME (use for opening, in-body reference, and sign-off — sign off with first name only): ${senderName}
@@ -422,7 +449,7 @@ SENDER'S PRODUCT OR SERVICE (describe/reference this separately in the body, not
 TARGET: ${targetAndRole}
 GOAL: ${goal}
 INDUSTRY CONTEXT: ${industry}
-Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.
+Use industry-appropriate pain points, terminology, benchmarks, and references for this sector so the emails sound credible to the reader. Stay accurate—do not invent fake stats or name-drop unrelated industries.${frameworkBlock}
 
 Return ONLY a JSON object with these keys (all string values, no markdown):
 - subject_short, short_email (body)
@@ -444,7 +471,7 @@ function parseEmailJson(raw) {
   return JSON.parse(str)
 }
 
-async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry) {
+async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, industry, framework = 'PAS') {
   const { senderName, senderOffer } = parseNameAndOffer(nameAndOffer)
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -459,7 +486,7 @@ async function generateEmails(nameAndOffer, targetAndRole, goal, toneLabel, indu
       max_tokens: 1500,
       system: buildSystemPromptWithTone(toneLabel),
       messages: [
-        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry) },
+        { role: 'user', content: buildUserMessage(senderName, senderOffer, targetAndRole, goal, industry, framework) },
       ],
     }),
   })
@@ -837,6 +864,8 @@ function App() {
   const [goal, setGoal] = useState('Book a Call')
   const [industry, setIndustry] = useState('Other')
   const [tone, setTone] = useState('Conversational')
+  const [framework, setFramework] = useState('PAS')
+  const [appliedFramework, setAppliedFramework] = useState(null)
   const [emails, setEmails] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -1001,6 +1030,8 @@ function App() {
     setGoal('Book a Call')
     setIndustry('Other')
     setTone('Conversational')
+    setFramework('PAS')
+    setAppliedFramework(null)
     setReengageName('')
     setReengageCompany('')
     setReengageTopic('')
@@ -1059,10 +1090,12 @@ function App() {
     setVariantsError(null)
     setVariantCopiedIndex(null)
     try {
+      setAppliedFramework(null)
       const result = appMode === 'reengage'
         ? await generateReengageEmails(nameAndOffer, reengageName, reengageCompany, reengageTopic, reengageLastContact, reengageReason, tone, industry)
-        : await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry)
+        : await generateEmails(nameAndOffer, targetAndRole, goal, tone, industry, framework)
       setEmails(result)
+      if (appMode !== 'reengage') setAppliedFramework(framework)
       if (!unlocked) {
         const newCount = usageCount + 1
         setUsageCount(newCount)
@@ -1928,6 +1961,37 @@ function App() {
             </div>
           </div>
 
+          {appMode === 'generate' && (
+          <div className="mt-6">
+            <div className="flex items-center gap-1.5 mb-2">
+              <label htmlFor="email-framework" className="text-sm font-medium text-slate-300">
+                Email Framework
+              </label>
+              <span className="group relative inline-flex">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="h-3.5 w-3.5 text-slate-500 cursor-help" aria-hidden="true">
+                  <path fillRule="evenodd" d="M15 8A7 7 0 1 1 1 8a7 7 0 0 1 14 0ZM9 5a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM6.75 8a.75.75 0 0 0 0 1.5h.75v1.75a.75.75 0 0 0 1.5 0v-2.5A.75.75 0 0 0 8.25 8h-1.5Z" clipRule="evenodd" />
+                </svg>
+                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-300 shadow-xl opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10 text-center">
+                  {EMAIL_FRAMEWORKS.find((f) => f.value === framework)?.tooltip ?? ''}
+                </span>
+              </span>
+            </div>
+            <select
+              id="email-framework"
+              value={framework}
+              onChange={(e) => setFramework(e.target.value)}
+              disabled={loading}
+              className="w-full rounded-xl bg-slate-700/50 border border-slate-600 text-white px-4 py-3.5 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer transition-shadow disabled:opacity-60"
+            >
+              {EMAIL_FRAMEWORKS.map((fw) => (
+                <option key={fw.value} value={fw.value} className="bg-slate-800 text-white">
+                  {fw.label} — {fw.description}
+                </option>
+              ))}
+            </select>
+          </div>
+          )}
+
           <div className="mt-8 flex flex-col sm:flex-row gap-3 sm:items-stretch">
             <div className="flex flex-1 min-w-0 flex-col sm:flex-row gap-2 sm:items-center">
               <button
@@ -1975,9 +2039,19 @@ function App() {
           style={{ transitionDuration: `${RESULTS_SECTION_FADE_MS}ms` }}
           onTransitionEnd={handleResultsSectionTransitionEnd}
         >
-          <h2 className="text-xl font-semibold text-slate-200 mb-5 sm:mb-6">
-            Generated Emails
-          </h2>
+          <div className="flex flex-wrap items-center gap-3 mb-5 sm:mb-6">
+            <h2 className="text-xl font-semibold text-slate-200">
+              Generated Emails
+            </h2>
+            {appliedFramework && (
+              <span
+                className="inline-flex items-center rounded-full border border-violet-500/40 bg-violet-500/15 px-2.5 py-0.5 text-xs font-semibold text-violet-300"
+                title={EMAIL_FRAMEWORKS.find((f) => f.value === appliedFramework)?.tooltip ?? ''}
+              >
+                {appliedFramework}
+              </span>
+            )}
+          </div>
           <div
             key={showGeneratedResults ? 'generated' : 'placeholder'}
             className={`grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6 ${showGeneratedResults ? 'animate-fade-in' : ''}`}
